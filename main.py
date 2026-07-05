@@ -262,7 +262,7 @@ HTML_TEMPLATE = r"""
                 {% endif %}
                 <div class="msg-content">
                   <div class="msg-info">
-                    <span class="tag-pill" style="background: {{ msg.tag_color }}">LV{{ msg.level }} {{ msg.role_text }}</span>
+                    <span class="tag-pill" style="background: {{ msg.tag_color }}">{% if msg.level %}LV{{ msg.level }} {% endif %}{{ msg.role_text }}</span>
                     <span class="nickname">{{ msg.nickname }}</span>
                   </div>
                   <div class="msg-bubble {% if msg.is_at %}is-at{% endif %}">
@@ -440,7 +440,12 @@ class WhoAtMePlugin(Star):
         context_on = await self._context_enabled(group_id)
         reminder_context = await self._reminder_context_config(group_id)
         reminder_context_on = bool(reminder_context.get("enabled"))
-        current = self._context_message(event) if context_on or reminder_context_on else None
+        sender_info = (
+            await self._member_info(event, group_id, self._sender_id(event))
+            if mentions or context_on or reminder_context_on
+            else {}
+        )
+        current = self._context_message(event, sender_info) if context_on or reminder_context_on else None
 
         if context_on and current:
             await self._append_after_context(group_id, current)
@@ -456,7 +461,7 @@ class WhoAtMePlugin(Star):
                 if reminder_context_on and reminder_before_count > 0
                 else []
             )
-            record = self._mention_record(event, targets)
+            record = self._mention_record(event, targets, sender_info)
             if context_on:
                 record["is_context"] = True
                 record["before"] = before
@@ -832,6 +837,68 @@ class WhoAtMePlugin(Star):
         pending = await self.get_kv_data(self._reminder_pending_key(group_id, target), [])
         return pending if isinstance(pending, list) else []
 
+    async def _member_info(self, event: AstrMessageEvent, group_id: str, user_id: str) -> dict[str, Any]:
+        info = self._member_info_from_event(event) if user_id == self._sender_id(event) else {}
+        if not user_id:
+            return info
+        if info.get("level") and (info.get("title") or info.get("role")):
+            return info
+
+        api_info = await self._call_onebot_action(
+            event,
+            "get_group_member_info",
+            group_id=self._numeric_id(group_id),
+            user_id=self._numeric_id(user_id),
+            no_cache=True,
+        )
+        api_info = self._mapping_data(api_info)
+        if api_info:
+            info.update(self._member_info_from_mapping(api_info))
+        return info
+
+    def _member_info_from_event(self, event: AstrMessageEvent) -> dict[str, Any]:
+        sender = getattr(event.message_obj, "sender", None)
+        raw_sender = {}
+        raw = getattr(event.message_obj, "raw_message", None)
+        if isinstance(raw, dict) and isinstance(raw.get("sender"), dict):
+            raw_sender = raw["sender"]
+
+        def pick(names: list[str]) -> Any:
+            for name in names:
+                value = getattr(sender, name, None) if sender else None
+                if value:
+                    return value
+                value = raw_sender.get(name)
+                if value:
+                    return value
+            return None
+
+        return self._member_info_from_mapping(
+            {
+                "role": pick(["role"]),
+                "title": pick(["title", "special_title", "specialTitle"]),
+                "level": pick(["level", "member_level", "qq_level", "qqLevel"]),
+                "card": pick(["card"]),
+                "nickname": pick(["nickname", "name"]),
+            }
+        )
+
+    def _member_info_from_mapping(self, data: dict[str, Any]) -> dict[str, Any]:
+        info: dict[str, Any] = {}
+        if data.get("role"):
+            info["role"] = str(data["role"])
+        title = data.get("title") or data.get("special_title") or data.get("specialTitle")
+        if title:
+            info["title"] = str(title)
+        level = data.get("level") or data.get("member_level") or data.get("qq_level") or data.get("qqLevel")
+        if level:
+            info["level"] = self._level_text(level)
+        if data.get("card"):
+            info["card"] = str(data["card"])
+        if data.get("nickname") or data.get("name"):
+            info["nickname"] = str(data.get("nickname") or data.get("name"))
+        return info
+
     async def _reminder_group_enabled(self, event: AstrMessageEvent, group_id: str) -> bool:
         enabled_umos = self._reminder_enabled_group_umos()
         if enabled_umos:
@@ -960,15 +1027,20 @@ class WhoAtMePlugin(Star):
         message = str(data.get("message") or "")
         if is_at:
             message = self._strip_at_display(message, [target_name, data.get("target"), data.get("at"), data.get("AtQQ")])
-        role = str(data.get("role") or "member")
-        role_text = {"owner": "群主", "admin": "管理员"}.get(role, "群员")
+        role = str(data.get("role") or "member").lower()
+        role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "群员")
+        title = str(data.get("title") or "")
         user_id = str(data.get("user_id") or data.get("User") or "")
-        level = data.get("level") or 1
+        level = self._level_text(data.get("level"))
         tag_color = "#b4b4b6"
         if role == "owner":
             tag_color = "#f6c751"
-        elif role == "admin":
+        elif role in {"admin", "administrator"}:
             tag_color = "#57d6c5"
+        if title:
+            role_text = title
+            if role not in {"owner", "admin", "administrator"}:
+                tag_color = "#c99af8"
         avatar = f"http://q1.qlogo.cn/g?b=qq&nk={user_id}&s=100" if user_id.isdigit() else ""
         return {
             "user_id": user_id,
@@ -982,7 +1054,7 @@ class WhoAtMePlugin(Star):
             "time_text": self._time_text(data.get("time", 0)),
             "is_at": is_at,
             "target_name": target_name,
-            "role_class": role if role in {"owner", "admin"} else "",
+            "role_class": role if role in {"owner", "admin", "administrator"} else "",
             "role_text": role_text,
             "level": level,
             "tag_color": tag_color,
@@ -1031,28 +1103,38 @@ class WhoAtMePlugin(Star):
                 deduped.append(record)
         return deduped
 
-    def _mention_record(self, event: AstrMessageEvent, mentions: list[str] | None = None) -> dict[str, Any]:
+    def _mention_record(
+        self,
+        event: AstrMessageEvent,
+        mentions: list[str] | None = None,
+        member_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         sender_id = self._sender_id(event)
         sender = getattr(event.message_obj, "sender", None)
-        role = str(getattr(sender, "role", "") or self._raw_sender_value(event, "role") or "member")
+        member_info = member_info or {}
+        role = str(member_info.get("role") or getattr(sender, "role", "") or self._raw_sender_value(event, "role") or "member")
         return {
             "user_id": sender_id,
             "message": self._message_text_for_record(event, mentions or []),
             "images": self._images(event),
-            "name": self._sender_name(event),
+            "name": member_info.get("card") or member_info.get("nickname") or self._sender_name(event),
             "role": role,
+            "title": member_info.get("title") or "",
+            "level": member_info.get("level") or "",
             "time": self._timestamp(event),
             "message_id": str(getattr(event.message_obj, "message_id", "") or ""),
         }
 
-    def _context_message(self, event: AstrMessageEvent) -> dict[str, Any]:
-        record = self._mention_record(event)
+    def _context_message(self, event: AstrMessageEvent, member_info: dict[str, Any] | None = None) -> dict[str, Any]:
+        record = self._mention_record(event, member_info=member_info)
         return {
             "user_id": record["user_id"],
             "message": record["message"],
             "images": record["images"],
             "name": record["name"],
             "role": record["role"],
+            "title": record.get("title") or "",
+            "level": record.get("level") or "",
             "time": record["time"],
         }
 
@@ -1344,18 +1426,24 @@ class WhoAtMePlugin(Star):
         return None
 
     def _name_from_mapping(self, value: Any, keys: list[str]) -> str:
-        if not isinstance(value, dict):
+        data = self._mapping_data(value)
+        if not data:
             return ""
-        candidates = [value]
-        data = value.get("data")
-        if isinstance(data, dict):
-            candidates.insert(0, data)
+        candidates = [data]
+        if isinstance(value, dict) and value is not data:
+            candidates.append(value)
         for mapping in candidates:
             for key in keys:
                 name = mapping.get(key)
                 if name and not self._looks_like_numeric_id(name):
                     return str(name)
         return ""
+
+    def _mapping_data(self, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        data = value.get("data")
+        return data if isinstance(data, dict) else value
 
     def _self_id(self, event: AstrMessageEvent) -> str:
         if hasattr(event, "get_self_id"):
@@ -1432,6 +1520,14 @@ class WhoAtMePlugin(Star):
     def _looks_like_numeric_id(self, value: Any) -> bool:
         text = str(value).strip()
         return text.isdigit() and len(text) >= 5
+
+    def _level_text(self, value: Any) -> str:
+        if value is None or value == "":
+            return ""
+        text = str(value).strip()
+        if text in {"0", "-1"}:
+            return ""
+        return re.sub(r"^lv", "", text, flags=re.I)
 
     def _plain_summary(self, records: list[dict[str, Any]], target_name: str) -> str:
         lines = [f"谁艾特了 {target_name}："]
