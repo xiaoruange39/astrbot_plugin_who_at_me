@@ -949,10 +949,12 @@ class WhoAtMePlugin(Star):
             blocks.append(
                 {
                     "at_time": record.get("time", 0),
+                    "main_key": self._render_message_key(main),
                     "msgs": self._dedupe_messages(messages),
                 }
             )
 
+        blocks = self._dedupe_blocks(blocks)
         blocks.sort(key=lambda item: item["at_time"], reverse=reverse)
         return blocks
 
@@ -1003,6 +1005,28 @@ class WhoAtMePlugin(Star):
         result = list(seen.values())
         result.sort(key=lambda item: item.get("sort_time", 0))
         return result
+
+    def _dedupe_blocks(self, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        for block in blocks:
+            for idx, existing in enumerate(deduped):
+                if (
+                    existing.get("main_key") == block.get("main_key")
+                    and abs(self._record_time(existing) - self._record_time(block)) <= 3
+                ):
+                    if self._record_time(block) >= self._record_time(existing):
+                        deduped[idx] = block
+                    break
+            else:
+                deduped.append(block)
+        return deduped
+
+    def _render_message_key(self, msg: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            msg.get("user_id"),
+            self._normalize_record_text(msg.get("message")),
+            tuple(msg.get("images") or []),
+        )
 
     def _chunk_blocks(self, blocks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
         chunks: list[list[dict[str, Any]]] = []
@@ -1477,14 +1501,17 @@ class WhoAtMePlugin(Star):
         return abs(self._record_time(left) - self._record_time(right)) <= window_seconds
 
     def _record_message_key(self, record: dict[str, Any]) -> str:
-        return re.sub(r"\s+", " ", str(record.get("message") or "")).strip()
+        return self._normalize_record_text(record.get("message"))
+
+    def _normalize_record_text(self, value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip()
 
     def _record_images_key(self, record: dict[str, Any]) -> tuple[str, ...]:
         return tuple(str(image) for image in (record.get("images") or record.get("image") or []))
 
     def _record_time(self, record: dict[str, Any]) -> int:
         try:
-            return int(float(record.get("time") or 0))
+            return int(float(record.get("time") or record.get("at_time") or 0))
         except (TypeError, ValueError):
             return 0
 
