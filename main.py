@@ -538,7 +538,7 @@ class WhoAtMePlugin(Star):
     ) -> bool:
         if target == ALL_TARGET:
             return False
-        if not await self._reminder_group_enabled(group_id):
+        if not await self._reminder_group_enabled(event, group_id):
             return False
         if not await self._reminder_user_enabled(group_id, target):
             return False
@@ -572,6 +572,9 @@ class WhoAtMePlugin(Star):
         return True
 
     async def _deliver_pending_reminders(self, event: AstrMessageEvent, group_id: str, user_id: str) -> None:
+        if not await self._reminder_group_enabled(event, group_id):
+            return
+
         pending = await self._get_pending_reminders(group_id, user_id)
         if not pending:
             return
@@ -825,7 +828,11 @@ class WhoAtMePlugin(Star):
         pending = await self.get_kv_data(self._reminder_pending_key(group_id, target), [])
         return pending if isinstance(pending, list) else []
 
-    async def _reminder_group_enabled(self, group_id: str) -> bool:
+    async def _reminder_group_enabled(self, event: AstrMessageEvent, group_id: str) -> bool:
+        enabled_umos = self._reminder_enabled_group_umos()
+        if enabled_umos:
+            return self._event_umo(event) in enabled_umos
+
         value = await self.get_kv_data(self._reminder_group_key(group_id), None)
         return self._config_bool("reminder", "default_group_enabled", default=True) if value is None else bool(value)
 
@@ -870,13 +877,18 @@ class WhoAtMePlugin(Star):
     async def _reminder_status_text(self, event: AstrMessageEvent, group_id: str) -> str:
         sender_id = self._sender_id(event)
         context_config = await self._reminder_context_config(group_id)
-        group_status = "开启" if await self._reminder_group_enabled(group_id) else "关闭"
+        group_status = "开启" if await self._reminder_group_enabled(event, group_id) else "关闭"
         user_status = "开启" if await self._reminder_user_enabled(group_id, sender_id) else "关闭"
         context_status = "开启" if context_config.get("enabled") else "关闭"
         pending_count = len(await self._get_pending_reminders(group_id, sender_id)) if sender_id else 0
+        current_umo = self._event_umo(event)
+        enabled_umos = self._reminder_enabled_group_umos()
+        umo_status = "未配置名单" if not enabled_umos else ("已命中" if current_umo in enabled_umos else "未命中")
         return (
             "艾特提醒状态：\n"
             f"本群提醒：{group_status}\n"
+            f"当前 UMO：{current_umo or '未知'}\n"
+            f"UMO 名单：{umo_status}\n"
             f"你的提醒：{user_status}\n"
             f"提醒上下文：{context_status}（前 {context_config.get('before', 0)} / 后 {context_config.get('after', 0)}）\n"
             f"离开判定：{self._reminder_away_seconds() // 60} 分钟未发言\n"
@@ -1453,6 +1465,15 @@ class WhoAtMePlugin(Star):
         value = self._config_value(*keys, default=default)
         return str(value if value is not None else default)
 
+    def _config_list(self, *keys: str) -> list[str]:
+        value = self._config_value(*keys, default=[])
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            parts = re.split(r"[\n,，]+", value)
+            return [part.strip() for part in parts if part.strip()]
+        return []
+
     def _format_template(self, template: str, **kwargs: Any) -> str:
         try:
             return template.format(**kwargs)
@@ -1491,6 +1512,12 @@ class WhoAtMePlugin(Star):
 
     def _max_reminder_context(self) -> int:
         return max(0, self._config_int("reminder", "max_context_messages", default=MAX_REMINDER_CONTEXT))
+
+    def _reminder_enabled_group_umos(self) -> set[str]:
+        return set(self._config_list("reminder", "enabled_group_umos"))
+
+    def _event_umo(self, event: AstrMessageEvent) -> str:
+        return str(getattr(event, "unified_msg_origin", "") or "")
 
     def _record_key(self, group_id: str, target: str) -> str:
         return f"records:{group_id}:{target}"

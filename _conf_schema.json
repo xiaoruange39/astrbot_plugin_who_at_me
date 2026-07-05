@@ -33,6 +33,12 @@
         "default": true,
         "hint": "关闭后不会生成回群提醒；仍可用 #开启本群艾特提醒 单独开启。"
       },
+      "enabled_group_umos": {
+        "description": "限定开启提醒的群 UMO 名单",
+        "type": "list",
+        "default": [],
+        "hint": "留空则不限制群，继续使用默认群开关和群命令；填入后只有这些 UMO 的群会生成/推送提醒。可用 #艾特提醒状态 查看当前群 UMO。"
+      },
       "default_user_enabled": {
         "description": "用户默认接收艾特提醒",
         "type": "bool",
