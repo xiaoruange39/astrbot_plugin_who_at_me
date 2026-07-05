@@ -12,6 +12,7 @@ from typing import Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
+import astrbot.api.message_components as Comp
 from astrbot.api.star import Context, Star
 
 
@@ -587,10 +588,9 @@ class WhoAtMePlugin(Star):
             target_name=target_name,
             count=len(pending),
         )
-        await self._try_send(event, event.plain_result(reminder_text))
-
         blocks = self._build_blocks(pending, target_name, reverse=False)
         chunks = self._chunk_blocks(blocks)
+        reminder_text_sent = False
         try:
             for idx, chunk in enumerate(chunks, start=1):
                 image_path = await self._render_query_image(
@@ -607,10 +607,17 @@ class WhoAtMePlugin(Star):
                         "footer_image": self._footer_image_url(),
                     }
                 )
+                if not reminder_text_sent:
+                    reminder_text_sent = True
+                    if await self._try_send_text_image(event, reminder_text, image_path):
+                        continue
+                    await self._try_send(event, event.plain_result(reminder_text))
                 if not await self._try_send(event, event.image_result(image_path)):
                     raise RuntimeError(f"发送提醒图片失败: {image_path}")
         except Exception as exc:
             logger.error(f"[谁艾特我] 渲染或发送提醒失败: {exc}")
+            if not reminder_text_sent:
+                await self._try_send(event, event.plain_result(reminder_text))
             await self._try_send(event, event.plain_result(self._plain_summary(pending, target_name)))
 
     async def _query(
@@ -726,6 +733,20 @@ class WhoAtMePlugin(Star):
         except Exception as exc:
             logger.error(f"[谁艾特我] 主动发送失败: {exc}")
             return False
+
+    async def _try_send_text_image(self, event: AstrMessageEvent, text: str, image_path: str) -> bool:
+        try:
+            await event.send(event.chain_result([Comp.Plain(text), self._image_component(image_path)]))
+            return True
+        except Exception as exc:
+            logger.warning(f"[谁艾特我] 合并发送提醒失败，回退到分开发送: {exc}")
+            return False
+
+    def _image_component(self, image_path: str) -> Any:
+        image_path = str(image_path)
+        if re.match(r"^https?://", image_path, re.I):
+            return Comp.Image.fromURL(image_path)
+        return Comp.Image.fromFileSystem(image_path)
 
     async def _render_html_with_browser(self, template: str, data: dict[str, Any]) -> str:
         from jinja2 import Environment
