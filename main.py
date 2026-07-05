@@ -563,7 +563,7 @@ class WhoAtMePlugin(Star):
         key = self._reminder_pending_key(group_id, target)
         pending = await self._get_pending_reminders(group_id, target)
         dedupe_key = self._record_identity(pending_record)
-        if any(self._record_identity(item) == dedupe_key for item in pending):
+        if any(self._record_identity(item) == dedupe_key or self._records_are_duplicate(item, pending_record) for item in pending):
             return False
 
         pending.append(pending_record)
@@ -580,6 +580,7 @@ class WhoAtMePlugin(Star):
             return
 
         await self.delete_kv_data(self._reminder_pending_key(group_id, user_id))
+        pending = self._dedupe_records(pending)
         pending.sort(key=lambda item: item.get("time", 0))
         target_name = self._target_name(event, user_id)
         reminder_text = self._format_template(
@@ -600,12 +601,12 @@ class WhoAtMePlugin(Star):
                     {
                         "blocks": chunk,
                         "group_name": self._group_name(event, group_id),
-                        "member_count": self._member_count(event),
+                        "member_count": await self._member_count(event, group_id),
                         "target_name": target_name,
                         "total_records": len(pending),
                         "context_enabled": any(item.get("is_context") for item in pending),
                         "now": datetime.now().strftime("%H:%M"),
-                        "page_label": f"提醒 第 {idx} / {len(chunks)} 页" if len(chunks) > 1 else "艾特提醒",
+                        "page_label": "",
                         "header_image": self._header_image_url(),
                         "footer_image": self._footer_image_url(),
                     }
@@ -661,7 +662,7 @@ class WhoAtMePlugin(Star):
                     {
                         "blocks": chunk,
                         "group_name": self._group_name(event, group_id),
-                        "member_count": self._member_count(event),
+                        "member_count": await self._member_count(event, group_id),
                         "target_name": target_name,
                         "total_records": len(records),
                         "context_enabled": any(item.get("is_context") for item in records),
@@ -815,6 +816,10 @@ class WhoAtMePlugin(Star):
     async def _append_record(self, group_id: str, target: str, record: dict[str, Any]) -> None:
         key = self._record_key(group_id, target)
         records = await self.get_kv_data(key, [])
+        if not isinstance(records, list):
+            records = []
+        if any(self._records_are_duplicate(item, record) for item in records[-10:]):
+            return
         records.append(dict(record))
         records = records[-self._max_records_per_target():]
         await self.put_kv_data(key, records)
@@ -1016,16 +1021,16 @@ class WhoAtMePlugin(Star):
         return chunks
 
     def _dedupe_records(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        deduped = {}
+        deduped: list[dict[str, Any]] = []
         for record in records:
-            key = (
-                record.get("user_id") or record.get("User"),
-                record.get("time"),
-                record.get("message"),
-                tuple(record.get("images") or record.get("image") or []),
-            )
-            deduped[key] = record
-        return list(deduped.values())
+            for idx, existing in enumerate(deduped):
+                if self._records_are_duplicate(existing, record):
+                    if self._record_time(record) >= self._record_time(existing):
+                        deduped[idx] = record
+                    break
+            else:
+                deduped.append(record)
+        return deduped
 
     def _mention_record(self, event: AstrMessageEvent, mentions: list[str] | None = None) -> dict[str, Any]:
         sender_id = self._sender_id(event)
@@ -1220,7 +1225,7 @@ class WhoAtMePlugin(Star):
                     return str(raw[key])
         return str(group_id)
 
-    def _member_count(self, event: AstrMessageEvent) -> int:
+    async def _member_count(self, event: AstrMessageEvent, group_id: str) -> int:
         group = getattr(event.message_obj, "group", None)
         members = getattr(group, "members", None) if group else None
         if members:
@@ -1230,6 +1235,20 @@ class WhoAtMePlugin(Star):
         if isinstance(raw, dict):
             for key in ("member_count", "member_num", "group_member_count"):
                 value = raw.get(key)
+                try:
+                    if value:
+                        return int(value)
+                except (TypeError, ValueError):
+                    pass
+        group_info = await self._call_onebot_action(
+            event,
+            "get_group_info",
+            group_id=self._numeric_id(group_id),
+            no_cache=True,
+        )
+        if isinstance(group_info, dict):
+            for key in ("member_count", "member_num", "group_member_count"):
+                value = group_info.get(key)
                 try:
                     if value:
                         return int(value)
@@ -1435,6 +1454,39 @@ class WhoAtMePlugin(Star):
             record.get("message"),
             tuple(record.get("images") or record.get("image") or []),
         )
+
+    def _records_are_duplicate(self, left: dict[str, Any], right: dict[str, Any], window_seconds: int = 3) -> bool:
+        left_message_id = str(left.get("message_id") or "")
+        right_message_id = str(right.get("message_id") or "")
+        if left_message_id and right_message_id and left_message_id == right_message_id:
+            return True
+
+        if str(left.get("user_id") or left.get("User") or "") != str(right.get("user_id") or right.get("User") or ""):
+            return False
+
+        left_target = str(left.get("target") or "")
+        right_target = str(right.get("target") or "")
+        if left_target and right_target and left_target != right_target:
+            return False
+
+        if self._record_message_key(left) != self._record_message_key(right):
+            return False
+        if self._record_images_key(left) != self._record_images_key(right):
+            return False
+
+        return abs(self._record_time(left) - self._record_time(right)) <= window_seconds
+
+    def _record_message_key(self, record: dict[str, Any]) -> str:
+        return re.sub(r"\s+", " ", str(record.get("message") or "")).strip()
+
+    def _record_images_key(self, record: dict[str, Any]) -> tuple[str, ...]:
+        return tuple(str(image) for image in (record.get("images") or record.get("image") or []))
+
+    def _record_time(self, record: dict[str, Any]) -> int:
+        try:
+            return int(float(record.get("time") or 0))
+        except (TypeError, ValueError):
+            return 0
 
     def _config_value(self, *keys: str, default: Any = None) -> Any:
         value: Any = self.config
