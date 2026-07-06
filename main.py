@@ -355,7 +355,7 @@ HTML_TEMPLATE = r"""
                           {% if msg.quote.images %}
                             <div class="quote-images">
                               {% for image in msg.quote.images %}
-                                <img src="{{ image }}" class="quote-img" />
+                                <img src="{{ image }}" class="quote-img" onerror="this.remove()" />
                               {% endfor %}
                             </div>
                           {% endif %}
@@ -369,7 +369,7 @@ HTML_TEMPLATE = r"""
                       </div>
                     {% endif %}
                     {% for image in msg.images %}
-                      <img src="{{ image }}" class="msg-img" />
+                      <img src="{{ image }}" class="msg-img" onerror="this.remove()" />
                     {% endfor %}
                   </div>
                   <div class="msg-time-bottom">{{ msg.time_text }}</div>
@@ -697,20 +697,27 @@ class WhoAtMePlugin(Star):
         if not pending:
             return
 
-        await self.delete_kv_data(self._reminder_pending_key(group_id, user_id))
         now_time = self._timestamp(event)
         away_seconds = self._reminder_away_seconds()
-        pending = [
-            record
-            for record in pending
-            if away_seconds <= 0 or now_time - self._record_time(record) >= away_seconds
-        ]
         pending = self._dedupe_records(pending)
+        ready = []
+        deferred = []
+        for record in pending:
+            if away_seconds <= 0 or now_time - self._record_time(record) >= away_seconds:
+                ready.append(record)
+            else:
+                deferred.append(record)
+
+        if deferred:
+            await self.put_kv_data(self._reminder_pending_key(group_id, user_id), deferred)
+        else:
+            await self.delete_kv_data(self._reminder_pending_key(group_id, user_id))
+        pending = ready
         if not pending:
             return
 
         pending.sort(key=lambda item: item.get("time", 0))
-        target_name = self._target_name(event, user_id)
+        target_name = await self._target_name(event, group_id, user_id)
         reminder_text = self._format_template(
             self._config_str(
                 "message",
@@ -772,15 +779,22 @@ class WhoAtMePlugin(Star):
 
         query_reverse = self._query_reverse_order()
         records.sort(key=lambda item: item.get("time", 0), reverse=query_reverse)
-        target_name = self._target_name(event, target)
+        target_name = await self._target_name(event, group_id, target)
         blocks = self._build_blocks(records, target_name, reverse=query_reverse)
         chunks = self._chunk_blocks(blocks)
         if not chunks:
             return [event.plain_result(self._plain_summary(records, target_name))]
 
+        is_self_query = target == self._sender_id(event)
+        target_pronoun = "你" if is_self_query else "ta"
+        waiting_template = self._config_str("message", "waiting_text_template", default="让{bot_name}看看谁艾特过你哦，稍等一下~")
+        if not is_self_query and waiting_template == "让{bot_name}看看谁艾特过你哦，稍等一下~":
+            waiting_template = "让{bot_name}看看谁艾特过ta哦，稍等一下~"
         waiting_text = self._format_template(
-            self._config_str("message", "waiting_text_template", default="让{bot_name}看看谁艾特过你哦，稍等一下~"),
+            waiting_template,
             bot_name=await self._bot_name(event, group_id),
+            target_name=target_name,
+            target_pronoun=target_pronoun,
         )
         if not await self._try_send(event, event.plain_result(waiting_text)):
             return [event.plain_result(waiting_text)]
@@ -1322,7 +1336,7 @@ class WhoAtMePlugin(Star):
             "message": message,
             "has_message": bool(message.strip()),
             "message_html": html.escape(message).replace("\n", "<br>"),
-            "images": data.get("images") or data.get("image") or [],
+            "images": self._renderable_images(data.get("images") or data.get("image") or []),
             "quote": self._view_quote(data.get("quote")),
             "time": data.get("time", 0),
             "time_text": self._time_text(data.get("time", 0)),
@@ -1339,7 +1353,7 @@ class WhoAtMePlugin(Star):
         if not isinstance(quote, dict):
             return None
         message = str(quote.get("message") or "").strip()
-        images = [str(image) for image in (quote.get("images") or quote.get("image") or []) if image]
+        images = self._renderable_images(quote.get("images") or quote.get("image") or [])
         if not message and not images:
             return None
         nickname = str(quote.get("name") or quote.get("nickname") or quote.get("user_id") or "引用消息")
@@ -1742,6 +1756,41 @@ class WhoAtMePlugin(Star):
                 images.append(value)
         return self._unique_strings(images)
 
+    def _renderable_images(self, images: Any) -> list[str]:
+        if isinstance(images, str):
+            candidates = [images]
+        elif isinstance(images, list):
+            candidates = images
+        else:
+            candidates = []
+
+        result = []
+        for image in candidates:
+            value = self._renderable_image(image)
+            if value:
+                result.append(value)
+        return self._unique_strings(result)
+
+    def _renderable_image(self, image: Any) -> str:
+        value = str(image or "").strip()
+        if not value:
+            return ""
+        if re.match(r"^https?://", value, re.I):
+            return value
+        if re.match(r"^data:image/", value, re.I):
+            return value
+        if value.startswith("base64://"):
+            return "data:image/png;base64," + value[len("base64://") :]
+        if re.match(r"^file://", value, re.I):
+            return value
+        try:
+            path = Path(value)
+            if path.exists():
+                return path.resolve().as_uri()
+        except (OSError, ValueError):
+            pass
+        return ""
+
     def _parse_cq_attrs(self, attrs: str) -> dict[str, str]:
         result = {}
         for part in attrs.split(","):
@@ -1809,10 +1858,35 @@ class WhoAtMePlugin(Star):
             or self._sender_id(event)
         )
 
-    def _target_name(self, event: AstrMessageEvent, target: str) -> str:
+    async def _target_name(self, event: AstrMessageEvent, group_id: str, target: str) -> str:
         if target == self._sender_id(event):
             return self._sender_name(event)
-        return "全体成员" if target == ALL_TARGET else str(target)
+        if target == ALL_TARGET:
+            return "全体成员"
+        mention_name = self._mention_display_name(event, target)
+        if mention_name:
+            return mention_name
+        member_info = await self._member_info(event, group_id, target)
+        for key in ("card", "nickname", "name"):
+            name = member_info.get(key)
+            if name and not self._looks_like_numeric_id(name):
+                return str(name)
+        return str(target)
+
+    def _mention_display_name(self, event: AstrMessageEvent, target: str) -> str:
+        for segment in [*self._raw_message_segments(event), *self._message_chain(event)]:
+            if self._segment_type(segment) != "at":
+                continue
+            value = self._segment_value(segment, ["qq", "user_id", "target", "id"])
+            if str(value or "") != str(target):
+                continue
+            name = self._segment_value(segment, ["name", "display", "text", "nickname"])
+            if not name:
+                continue
+            text = re.sub(r"^@", "", str(name)).strip()
+            if text and not self._looks_like_numeric_id(text):
+                return text
+        return ""
 
     async def _group_name(self, event: AstrMessageEvent, group_id: str) -> str:
         group = getattr(event.message_obj, "group", None)

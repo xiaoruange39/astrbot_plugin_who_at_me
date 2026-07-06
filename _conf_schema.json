@@ -150,7 +150,7 @@
         "description": "查询等待提示模板",
         "type": "string",
         "default": "让{bot_name}看看谁艾特过你哦，稍等一下~",
-        "hint": "可用变量：{bot_name}"
+        "hint": "可用变量：{bot_name}、{target_name}、{target_pronoun}；查询别人且使用默认模板时会自动显示 ta。"
       },
       "reminder_text_template": {
         "description": "回群提醒提示模板",
