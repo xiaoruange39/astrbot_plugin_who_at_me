@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import html
 import re
 import tempfile
@@ -337,7 +338,7 @@ HTML_TEMPLATE = r"""
                 {% endif %}
                 <div class="msg-content">
                   <div class="msg-info">
-                    <span class="tag-pill" style="background: {{ msg.tag_color }}">{% if msg.level %}LV{{ msg.level }} {% endif %}{{ msg.role_text }}</span>
+                    {% if msg.tag_text %}<span class="tag-pill" style="background: {{ msg.tag_color }}">{{ msg.tag_text }}</span>{% endif %}
                     <span class="nickname">{{ msg.nickname }}</span>
                     {% if msg.member_title %}<span class="member-title">{{ msg.member_title }}</span>{% endif %}
                   </div>
@@ -712,7 +713,7 @@ class WhoAtMePlugin(Star):
         )
         blocks = self._build_blocks(pending, target_name, reverse=False)
         chunks = self._chunk_blocks(blocks)
-        reminder_text_sent = False
+        image_paths: list[str] = []
         try:
             for idx, chunk in enumerate(chunks, start=1):
                 image_path = await self._render_query_image(
@@ -729,16 +730,16 @@ class WhoAtMePlugin(Star):
                         "footer_image": self._footer_image_url(),
                     }
                 )
-                if not reminder_text_sent:
-                    reminder_text_sent = True
-                    if await self._try_send_text_image(event, reminder_text, image_path):
-                        continue
-                    await self._try_send(event, event.plain_result(reminder_text))
-                if not await self._try_send(event, event.image_result(image_path)):
-                    raise RuntimeError(f"发送提醒图片失败: {image_path}")
+                image_paths.append(image_path)
+
+            if not await self._try_send_text_images(event, reminder_text, image_paths):
+                await self._try_send(event, event.plain_result(reminder_text))
+                for image_path in image_paths:
+                    if not await self._try_send(event, event.image_result(image_path)):
+                        raise RuntimeError(f"发送提醒图片失败: {image_path}")
         except Exception as exc:
             logger.error(f"[谁艾特我] 渲染或发送提醒失败: {exc}")
-            if not reminder_text_sent:
+            if not image_paths:
                 await self._try_send(event, event.plain_result(reminder_text))
             await self._try_send(event, event.plain_result(self._plain_summary(pending, target_name)))
 
@@ -775,8 +776,9 @@ class WhoAtMePlugin(Star):
         if not await self._try_send(event, event.plain_result(waiting_text)):
             return [event.plain_result(waiting_text)]
 
-        for idx, chunk in enumerate(chunks, start=1):
-            try:
+        image_paths: list[str] = []
+        try:
+            for idx, chunk in enumerate(chunks, start=1):
                 image_path = await self._render_query_image(
                     {
                         "blocks": chunk,
@@ -791,12 +793,15 @@ class WhoAtMePlugin(Star):
                         "footer_image": self._footer_image_url(),
                     }
                 )
-                if not await self._try_send(event, event.image_result(image_path)):
-                    raise RuntimeError(f"发送图片失败: {image_path}")
-            except Exception as exc:
-                logger.error(f"[谁艾特我] 渲染或发送图片失败: {exc}")
-                await self._try_send(event, event.plain_result(self._plain_summary(records, target_name)))
-                break
+                image_paths.append(image_path)
+
+            if not await self._try_send_images(event, image_paths):
+                for image_path in image_paths:
+                    if not await self._try_send(event, event.image_result(image_path)):
+                        raise RuntimeError(f"发送图片失败: {image_path}")
+        except Exception as exc:
+            logger.error(f"[谁艾特我] 渲染或发送图片失败: {exc}")
+            await self._try_send(event, event.plain_result(self._plain_summary(records, target_name)))
 
         return []
 
@@ -857,19 +862,120 @@ class WhoAtMePlugin(Star):
             logger.error(f"[谁艾特我] 主动发送失败: {exc}")
             return False
 
-    async def _try_send_text_image(self, event: AstrMessageEvent, text: str, image_path: str) -> bool:
+    async def _try_send_images(self, event: AstrMessageEvent, image_paths: list[str]) -> bool:
+        if not image_paths:
+            return False
+        if len(image_paths) == 1:
+            return await self._try_send(event, event.image_result(image_paths[0]))
+        if await self._try_send_forward_images(event, "", image_paths):
+            return True
         try:
-            await event.send(event.chain_result([Comp.Plain(text), self._image_component(image_path)]))
+            await event.send(event.chain_result([self._image_component(path) for path in image_paths]))
+            return True
+        except Exception as exc:
+            logger.warning(f"[谁艾特我] 普通合并发送图片失败，回退到分开发送: {exc}")
+            return False
+
+    async def _try_send_text_images(self, event: AstrMessageEvent, text: str, image_paths: list[str]) -> bool:
+        if not image_paths:
+            return False
+        if len(image_paths) > 1 and await self._try_send_forward_images(event, text, image_paths):
+            return True
+        try:
+            components = [Comp.Plain(text)]
+            components.extend(self._image_component(path) for path in image_paths)
+            await event.send(event.chain_result(components))
             return True
         except Exception as exc:
             logger.warning(f"[谁艾特我] 合并发送提醒失败，回退到分开发送: {exc}")
             return False
+
+    async def _try_send_forward_images(self, event: AstrMessageEvent, text: str, image_paths: list[str]) -> bool:
+        group_id = self._group_id(event)
+        if not group_id or len(image_paths) <= 1:
+            return False
+
+        self_id = self._self_id(event) or "10000"
+        bot_name = await self._bot_name(event, group_id)
+        uin = self._numeric_id(self_id)
+        nodes = []
+        if text.strip():
+            nodes.append(
+                {
+                    "type": "node",
+                    "data": {
+                        "name": bot_name,
+                        "uin": uin,
+                        "content": [{"type": "text", "data": {"text": text}}],
+                    },
+                }
+            )
+
+        for image_path in image_paths:
+            nodes.append(
+                {
+                    "type": "node",
+                    "data": {
+                        "name": bot_name,
+                        "uin": uin,
+                        "content": [{"type": "image", "data": {"file": self._onebot_image_file(image_path)}}],
+                    },
+                }
+            )
+
+        sent = await self._try_onebot_action(
+            event,
+            "send_group_forward_msg",
+            group_id=self._numeric_id(group_id),
+            messages=nodes,
+        )
+        if sent:
+            return True
+
+        logger.warning("[谁艾特我] 合并转发发送失败，回退到普通图片发送")
+        return False
+
+    async def _try_onebot_action(self, event: AstrMessageEvent, action: str, **kwargs: Any) -> bool:
+        bot = getattr(event, "bot", None)
+        caller = getattr(bot, "call_action", None)
+        if not callable(caller):
+            return False
+
+        self_id = self._self_id(event)
+        if self_id and "self_id" not in kwargs:
+            kwargs["self_id"] = self_id
+
+        try:
+            await caller(action, **kwargs)
+            return True
+        except TypeError:
+            kwargs.pop("self_id", None)
+            try:
+                await caller(action, **kwargs)
+                return True
+            except Exception as exc:
+                logger.debug(f"[谁艾特我] 调用协议端 API {action} 失败: {exc}")
+        except Exception as exc:
+            logger.debug(f"[谁艾特我] 调用协议端 API {action} 失败: {exc}")
+        return False
 
     def _image_component(self, image_path: str) -> Any:
         image_path = str(image_path)
         if re.match(r"^https?://", image_path, re.I):
             return Comp.Image.fromURL(image_path)
         return Comp.Image.fromFileSystem(image_path)
+
+    def _onebot_image_file(self, image_path: str) -> str:
+        image_path = str(image_path)
+        if re.match(r"^https?://", image_path, re.I):
+            return image_path
+        try:
+            return "base64://" + base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
+        except Exception:
+            try:
+                return Path(image_path).resolve().as_uri()
+            except Exception:
+                return image_path
 
     async def _render_html_with_browser(self, template: str, data: dict[str, Any]) -> str:
         from jinja2 import Environment
@@ -1182,11 +1288,15 @@ class WhoAtMePlugin(Star):
         if is_at:
             message = self._strip_at_display(message, [target_name, data.get("target"), data.get("at"), data.get("AtQQ")])
         role = str(data.get("role") or "member").lower()
-        role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "群员")
+        role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "")
         title = str(data.get("title") or "")
         member_title = str(data.get("member_title") or title or "")
         user_id = str(data.get("user_id") or data.get("User") or "")
         level = self._level_text(data.get("level"))
+        tag_parts = [f"LV{level}"] if level else []
+        if role_text and not member_title:
+            tag_parts.append(role_text)
+        tag_text = " ".join(tag_parts)
         tag_color = "#b4b4b6"
         if role == "owner":
             tag_color = "#f6c751"
@@ -1211,6 +1321,7 @@ class WhoAtMePlugin(Star):
             "role_class": role if role in {"owner", "admin", "administrator"} else "",
             "role_text": role_text,
             "level": level,
+            "tag_text": tag_text,
             "tag_color": tag_color,
         }
 
