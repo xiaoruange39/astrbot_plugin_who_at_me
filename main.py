@@ -2466,6 +2466,10 @@ class WhoAtMePlugin(Star):
     def _page_data(self) -> dict[str, Any]:
         data = self._font_data()
         data["layout"] = self._render_layout()
+        data["images"] = {
+            "header": self._header_image_url(),
+            "footer": self._footer_image_url(),
+        }
         return data
 
     def _font_data(self) -> dict[str, Any]:

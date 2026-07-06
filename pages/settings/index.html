@@ -89,6 +89,13 @@ button:disabled { opacity:.55; cursor:not-allowed }
   position:relative;
   border-bottom:1px solid #e7eaef;
 }
+.preview-header-img {
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  object-fit:cover;
+}
 .preview-time {
   position:absolute;
   top:7px;
@@ -123,6 +130,25 @@ button:disabled { opacity:.55; cursor:not-allowed }
   font-size:22px;
   font-weight:850;
   flex:0 0 50px;
+}
+.preview-footer {
+  min-height:58px;
+  background:#fff;
+}
+.preview-footer img {
+  display:block;
+  width:100%;
+  min-height:58px;
+  object-fit:cover;
+}
+.img-missing {
+  height:58px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color:var(--muted);
+  font-size:12px;
+  border-top:1px solid #e7eaef;
 }
 .bubble { max-width:380px }
 .meta { display:flex; gap:8px; align-items:center; margin:0 0 6px 2px; color:#666; font-size:14px; font-weight:700 }
@@ -202,6 +228,7 @@ button:disabled { opacity:.55; cursor:not-allowed }
       <div class="preview-wrap">
         <div class="phone">
           <div class="preview-header">
+            <img id="previewHeaderImage" class="preview-header-img" alt="">
             <div class="preview-time" id="previewTime">21:30</div>
             <div class="preview-group" id="previewGroup">闲聊群(80) 👂</div>
           </div>
@@ -212,6 +239,7 @@ button:disabled { opacity:.55; cursor:not-allowed }
               <div class="msg-bubble"><span class="at">@yuuki</span> 这是一条艾特记录预览</div>
             </div>
           </div>
+          <div class="preview-footer" id="previewFooter"></div>
         </div>
       </div>
       <div class="section">
@@ -269,6 +297,24 @@ function updatePreview() {
   $('previewGroup').style.left = l.group_x + 'px';
   $('previewGroup').style.top = l.group_y + 'px';
 }
+function updatePreviewImages() {
+  const images = state.images || {};
+  const header = images.header || '';
+  const footer = images.footer || '';
+  const headerImg = $('previewHeaderImage');
+  headerImg.style.display = header ? 'block' : 'none';
+  headerImg.onerror = () => { headerImg.style.display = 'none'; };
+  headerImg.src = header || '';
+  const footerEl = $('previewFooter');
+  if (!footer) {
+    footerEl.innerHTML = '<div class="img-missing">未设置底部图片</div>';
+    return;
+  }
+  footerEl.innerHTML = '<img id="previewFooterImage" src="' + escapeAttr(footer) + '" alt="">';
+  $('previewFooterImage').onerror = () => {
+    footerEl.innerHTML = '<div class="img-missing">底部图片加载失败</div>';
+  };
+}
 function renderFonts() {
   const fonts = state.fonts || [];
   if (!fonts.length) {
@@ -301,6 +347,7 @@ async function loadAll() {
     const resp = await apiGet('layout');
     state = dataOf(resp) || state;
     fillLayout(state.layout);
+    updatePreviewImages();
     renderFonts();
     setMsg('layoutMsg', '');
     setMsg('fontMsg', state.current_name ? '当前字体：' + state.current_name : '当前字体：默认字体');
