@@ -17,7 +17,7 @@ import astrbot.api.message_components as Comp
 from astrbot.api.star import Context, Star
 
 
-QUERY_PATTERN = re.compile(r"^(谁(艾特|@|at)(我|他|她|它)|哪个逼(艾特|@|at)我)$", re.I)
+QUERY_PATTERN = re.compile(r"^(谁(艾特|@|at)(我|他|她|它)|哪个逼(艾特|@|at)我)(?:\s*(?:\[CQ:at,[^\]]+\]|@.+))?$", re.I)
 CLEAR_PATTERN = re.compile(r"^(clear_at|清除(艾特|at)数据)$", re.I)
 CLEAR_ALL_PATTERN = re.compile(r"^(clear_all|清除全部(艾特|at)数据)$", re.I)
 CONTEXT_ON_PATTERN = re.compile(r"^(开启|打开)(艾特|at)上下文$", re.I)
@@ -1571,7 +1571,10 @@ class WhoAtMePlugin(Star):
     def _query_target(self, event: AstrMessageEvent, text: str, mentions: list[str]) -> str:
         if "我" in text:
             return self._sender_id(event)
-        return mentions[0] if mentions else ""
+        if mentions:
+            return mentions[0]
+        match = re.search(r"@\S*?\((\d{5,})\)|@(\d{5,})", text)
+        return next((group for group in match.groups() if group), "") if match else ""
 
     def _mentions(self, event: AstrMessageEvent) -> list[str]:
         result = []
