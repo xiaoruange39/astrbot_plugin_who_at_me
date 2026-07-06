@@ -701,17 +701,11 @@ class WhoAtMePlugin(Star):
         away_seconds = self._reminder_away_seconds()
         pending = self._dedupe_records(pending)
         ready = []
-        deferred = []
         for record in pending:
             if away_seconds <= 0 or now_time - self._record_time(record) >= away_seconds:
                 ready.append(record)
-            else:
-                deferred.append(record)
 
-        if deferred:
-            await self.put_kv_data(self._reminder_pending_key(group_id, user_id), deferred)
-        else:
-            await self.delete_kv_data(self._reminder_pending_key(group_id, user_id))
+        await self.delete_kv_data(self._reminder_pending_key(group_id, user_id))
         pending = ready
         if not pending:
             return
@@ -729,6 +723,7 @@ class WhoAtMePlugin(Star):
         )
         blocks = self._build_blocks(pending, target_name, reverse=False)
         chunks = self._chunk_blocks(blocks)
+        chunks = self._limit_chunks(chunks, self._max_reminder_pages())
         image_paths: list[str] = []
         try:
             for idx, chunk in enumerate(chunks, start=1):
@@ -782,6 +777,7 @@ class WhoAtMePlugin(Star):
         target_name = await self._target_name(event, group_id, target)
         blocks = self._build_blocks(records, target_name, reverse=query_reverse)
         chunks = self._chunk_blocks(blocks)
+        chunks = self._limit_chunks(chunks, self._max_query_pages())
         if not chunks:
             return [event.plain_result(self._plain_summary(records, target_name))]
 
@@ -1396,6 +1392,11 @@ class WhoAtMePlugin(Star):
         if current:
             chunks.append(current)
         return chunks
+
+    def _limit_chunks(self, chunks: list[list[dict[str, Any]]], max_pages: int) -> list[list[dict[str, Any]]]:
+        if max_pages <= 0:
+            return chunks
+        return chunks[:max_pages]
 
     def _dedupe_records(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         deduped: list[dict[str, Any]] = []
@@ -2262,6 +2263,12 @@ class WhoAtMePlugin(Star):
 
     def _max_messages_per_image(self) -> int:
         return max(1, self._config_int("record", "max_messages_per_image", default=MAX_MESSAGES_PER_IMAGE))
+
+    def _max_query_pages(self) -> int:
+        return max(0, self._config_int("record", "max_query_pages", default=0))
+
+    def _max_reminder_pages(self) -> int:
+        return max(0, self._config_int("reminder", "max_reminder_pages", default=0))
 
     def _query_reverse_order(self) -> bool:
         value = self._config_str("record", "query_sort_order", default="asc").strip().lower()

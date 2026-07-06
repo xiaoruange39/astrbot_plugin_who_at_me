@@ -27,6 +27,12 @@
         "default": 12,
         "hint": "记录较多时会自动分多张图。"
       },
+      "max_query_pages": {
+        "description": "单次查询最多发送图片页数",
+        "type": "int",
+        "default": 0,
+        "hint": "0 表示不限制；大于 0 时只发送前 N 页。"
+      },
       "query_context_max_messages": {
         "description": "查询上下文最多缓存消息条数",
         "type": "int",
@@ -75,6 +81,12 @@
         "type": "int",
         "default": 50,
         "hint": "超过后保留最新记录。"
+      },
+      "max_reminder_pages": {
+        "description": "单次提醒最多发送图片页数",
+        "type": "int",
+        "default": 0,
+        "hint": "0 表示不限制；大于 0 时只发送前 N 页。"
       },
       "default_context_enabled": {
         "description": "默认开启提醒截图上下文",
