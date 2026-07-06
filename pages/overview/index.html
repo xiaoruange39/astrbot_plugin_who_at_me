@@ -337,10 +337,15 @@ function updatePreviewImages() {
   if (!footer) {
     footerEl.innerHTML = '<div class="img-missing">未设置底部图片</div>';
   } else {
-    footerEl.innerHTML = '<img id="previewFooterImage" src="' + escapeAttr(footer) + '" alt="">';
-    $('previewFooterImage').onerror = () => {
+    footerEl.innerHTML = '';
+    const footerImg = document.createElement('img');
+    footerImg.id = 'previewFooterImage';
+    footerImg.alt = '';
+    footerImg.onerror = () => {
       footerEl.innerHTML = '<div class="img-missing">底部图片加载失败</div>';
     };
+    footerImg.src = footer;
+    footerEl.appendChild(footerImg);
   }
   $('imageStatus').innerHTML =
     '<div><span>顶部图：</span>' + escapeHtml(headerSource) + '</div>'
