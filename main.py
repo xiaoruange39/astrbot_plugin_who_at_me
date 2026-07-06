@@ -62,8 +62,10 @@ REFERENCE_SEGMENT_TYPES = {"reply", "quote", "source", "reference"}
 PAGE_SETTINGS_DEFAULTS = {
     "time_x": 30,
     "time_y": 7,
+    "time_font_size": 16,
     "group_x": 56,
     "group_y": 45,
+    "group_font_size": 22,
     "font_path": "",
     "header_image_path": "",
     "footer_image_path": "",
@@ -107,7 +109,7 @@ HTML_TEMPLATE = r"""
       position: absolute;
       top: {{ layout.time_y }}px;
       left: {{ layout.time_x }}px;
-      font-size: 16px;
+      font-size: {{ layout.time_font_size }}px;
       font-weight: 700;
       color: #111;
     }
@@ -119,7 +121,7 @@ HTML_TEMPLATE = r"""
       display: flex;
       align-items: center;
       min-width: 0;
-      font-size: 22px;
+      font-size: {{ layout.group_font_size }}px;
       line-height: 1.2;
       font-weight: 800;
       color: #000;
@@ -2633,6 +2635,7 @@ class WhoAtMePlugin(Star):
             "fonts": self._list_uploaded_fonts(),
             "current_path": current_path,
             "current_name": current_name,
+            "current_font_css": self._page_font_css(),
         }
 
     def _plugin_data_dir(self) -> Path:
@@ -2682,8 +2685,14 @@ class WhoAtMePlugin(Star):
         return {
             "time_x": self._clamp_int(data.get("time_x"), PAGE_SETTINGS_DEFAULTS["time_x"], 0, 600),
             "time_y": self._clamp_int(data.get("time_y"), PAGE_SETTINGS_DEFAULTS["time_y"], 0, 120),
+            "time_font_size": self._clamp_int(
+                data.get("time_font_size"), PAGE_SETTINGS_DEFAULTS["time_font_size"], 8, 72
+            ),
             "group_x": self._clamp_int(data.get("group_x"), PAGE_SETTINGS_DEFAULTS["group_x"], 0, 600),
             "group_y": self._clamp_int(data.get("group_y"), PAGE_SETTINGS_DEFAULTS["group_y"], 0, 120),
+            "group_font_size": self._clamp_int(
+                data.get("group_font_size"), PAGE_SETTINGS_DEFAULTS["group_font_size"], 8, 96
+            ),
         }
 
     def _render_layout(self) -> dict[str, int]:
@@ -2856,6 +2865,24 @@ class WhoAtMePlugin(Star):
         self._font_css_cache_key = cache_key
         self._font_css_cache_value = css
         return css
+
+    def _page_font_css(self) -> str:
+        font_path = self._resolve_custom_font_path()
+        if not font_path:
+            return ""
+        try:
+            font_data = base64.b64encode(font_path.read_bytes()).decode("ascii")
+        except OSError as exc:
+            logger.warning(f"[谁艾特我] 读取 Page 预览字体失败，使用默认字体: {exc}")
+            return ""
+        return (
+            "@font-face { "
+            "font-family: 'WhoAtMePreviewFont'; "
+            f"src: url(\"data:{self._font_mime_type(font_path)};base64,{font_data}\") format('{self._font_format(font_path)}'); "
+            "font-weight: 100 900; font-style: normal; font-display: block; "
+            "}\n"
+            ".phone, .phone * { font-family: 'WhoAtMePreviewFont', 'Microsoft YaHei', 'Segoe UI', sans-serif !important; }"
+        )
 
     def _image_setting_key(self, kind: str) -> str:
         return f"{kind}_image_path"

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>谁艾特我Pro设置</title>
+<style id="previewFontStyle"></style>
 <style>
 :root {
   --bg:#f3f5f8;
@@ -203,18 +204,26 @@ button:disabled { opacity:.55; cursor:not-allowed }
 
   <div class="grid">
     <div class="card">
-      <h2>顶部位置</h2>
+      <h2>顶部文字</h2>
       <div class="section">
         <div class="row">
           <div><label for="timeX">时间 X</label><input id="timeX" type="number" min="0" max="600" step="1"></div>
           <div><label for="timeY">时间 Y</label><input id="timeY" type="number" min="0" max="120" step="1"></div>
         </div>
         <div class="row">
+          <div><label for="timeFontSize">时间字号</label><input id="timeFontSize" type="number" min="8" max="72" step="1"></div>
+          <div></div>
+        </div>
+        <div class="row">
           <div><label for="groupX">群名 X</label><input id="groupX" type="number" min="0" max="600" step="1"></div>
           <div><label for="groupY">群名 Y</label><input id="groupY" type="number" min="0" max="120" step="1"></div>
         </div>
+        <div class="row">
+          <div><label for="groupFontSize">群名字号</label><input id="groupFontSize" type="number" min="8" max="96" step="1"></div>
+          <div></div>
+        </div>
         <div class="actions">
-          <button class="primary" id="saveLayout">保存位置</button>
+          <button class="primary" id="saveLayout">保存文字设置</button>
           <button id="resetLayout">恢复默认</button>
         </div>
         <div class="msg" id="layoutMsg"></div>
@@ -253,13 +262,13 @@ button:disabled { opacity:.55; cursor:not-allowed }
           <div class="preview-header">
             <img id="previewHeaderImage" class="preview-header-img" alt="">
             <div class="preview-time" id="previewTime">21:30</div>
-            <div class="preview-group" id="previewGroup">闲聊群(80) 👂</div>
+            <div class="preview-group" id="previewGroup">AstrBot交流群(128) 👂</div>
           </div>
           <div class="preview-chat">
-            <div class="avatar">小</div>
+            <div class="avatar">B</div>
             <div class="bubble">
-              <div class="meta"><span class="tag">LV100 群主</span><span>小祥²</span></div>
-              <div class="msg-bubble"><span class="at">@yuuki</span> 这是一条艾特记录预览</div>
+              <div class="meta"><span class="tag">LV100 群主</span><span>bot</span></div>
+              <div class="msg-bubble"><span class="at">@xxx</span> 这是一条艾特记录预览</div>
             </div>
           </div>
           <div class="preview-footer" id="previewFooter"></div>
@@ -277,7 +286,7 @@ button:disabled { opacity:.55; cursor:not-allowed }
 const B = window.AstrBotPluginPage;
 if (B) await B.ready();
 
-const defaults = { time_x:30, time_y:7, group_x:56, group_y:45 };
+const defaults = { time_x:30, time_y:7, time_font_size:16, group_x:56, group_y:45, group_font_size:22 };
 const defaultImages = { header:'', footer:'' };
 let state = { layout:{ ...defaults }, fonts:[], current_name:'', images:{ ...defaultImages } };
 
@@ -285,8 +294,10 @@ const $ = id => document.getElementById(id);
 const fields = {
   time_x: $('timeX'),
   time_y: $('timeY'),
+  time_font_size: $('timeFontSize'),
   group_x: $('groupX'),
-  group_y: $('groupY')
+  group_y: $('groupY'),
+  group_font_size: $('groupFontSize')
 };
 
 function dataOf(resp) { return resp && resp.data ? resp.data : resp; }
@@ -303,24 +314,33 @@ function readLayout() {
   return {
     time_x: Number(fields.time_x.value || defaults.time_x),
     time_y: Number(fields.time_y.value || defaults.time_y),
+    time_font_size: Number(fields.time_font_size.value || defaults.time_font_size),
     group_x: Number(fields.group_x.value || defaults.group_x),
-    group_y: Number(fields.group_y.value || defaults.group_y)
+    group_y: Number(fields.group_y.value || defaults.group_y),
+    group_font_size: Number(fields.group_font_size.value || defaults.group_font_size)
   };
 }
 function fillLayout(layout) {
   const l = { ...defaults, ...(layout || {}) };
   fields.time_x.value = l.time_x;
   fields.time_y.value = l.time_y;
+  fields.time_font_size.value = l.time_font_size;
   fields.group_x.value = l.group_x;
   fields.group_y.value = l.group_y;
+  fields.group_font_size.value = l.group_font_size;
   updatePreview();
 }
 function updatePreview() {
   const l = readLayout();
   $('previewTime').style.left = l.time_x + 'px';
   $('previewTime').style.top = l.time_y + 'px';
+  $('previewTime').style.fontSize = l.time_font_size + 'px';
   $('previewGroup').style.left = l.group_x + 'px';
   $('previewGroup').style.top = l.group_y + 'px';
+  $('previewGroup').style.fontSize = l.group_font_size + 'px';
+}
+function updatePreviewFont() {
+  $('previewFontStyle').textContent = state.current_font_css || '';
 }
 function updatePreviewImages() {
   const images = { ...defaultImages, ...(state.images || {}) };
@@ -382,6 +402,7 @@ async function loadAll() {
     const resp = await apiGet('layout');
     state = dataOf(resp) || state;
     fillLayout(state.layout);
+    updatePreviewFont();
     updatePreviewImages();
     renderFonts();
     setMsg('layoutMsg', '');
@@ -400,6 +421,7 @@ async function saveLayout(layout) {
   }
   state = dataOf(resp) || state;
   fillLayout(state.layout);
+  updatePreviewFont();
   setMsg('layoutMsg', '已保存');
 }
 function uploadFile(file) {
