@@ -698,7 +698,17 @@ class WhoAtMePlugin(Star):
             return
 
         await self.delete_kv_data(self._reminder_pending_key(group_id, user_id))
+        now_time = self._timestamp(event)
+        away_seconds = self._reminder_away_seconds()
+        pending = [
+            record
+            for record in pending
+            if away_seconds <= 0 or now_time - self._record_time(record) >= away_seconds
+        ]
         pending = self._dedupe_records(pending)
+        if not pending:
+            return
+
         pending.sort(key=lambda item: item.get("time", 0))
         target_name = self._target_name(event, user_id)
         reminder_text = self._format_template(
