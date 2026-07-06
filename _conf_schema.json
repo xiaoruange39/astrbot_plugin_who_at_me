@@ -138,14 +138,16 @@
         "default": 20000
       },
       "header_image_url": {
-        "description": "结果图顶部状态栏图片 URL",
+        "description": "结果图顶部状态栏图片 URL / 本地路径",
         "type": "string",
-        "default": "https://pic1.imgdb.cn/item/69e60edc1d6508f56becb8fa.png"
+        "default": "",
+        "hint": "可选项。留空时使用插件内置本地图片；Page 上传的自定义图片优先级更高。"
       },
       "footer_image_url": {
-        "description": "结果图底部图片 URL",
+        "description": "结果图底部图片 URL / 本地路径",
         "type": "string",
-        "default": "https://pic1.imgdb.cn/item/69e5f9e51d6508f56bec8ea5.png"
+        "default": "",
+        "hint": "可选项。留空时使用插件内置本地图片；Page 上传的自定义图片优先级更高。"
       },
       "cleanup_render_hours": {
         "description": "渲染临时图片保留小时数",

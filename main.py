@@ -44,8 +44,20 @@ RENDER_TASK_TIMEOUT_SEC = 25
 REMINDER_AWAY_SECONDS = 10 * 60
 MAX_PENDING_REMINDERS = 50
 MAX_REMINDER_CONTEXT = 5
-HEADER_IMAGE_URL = "https://pic1.imgdb.cn/item/69e60edc1d6508f56becb8fa.png"
-FOOTER_IMAGE_URL = "https://pic1.imgdb.cn/item/69e5f9e51d6508f56bec8ea5.png"
+LEGACY_HEADER_IMAGE_URL = "https://pic1.imgdb.cn/item/69e60edc1d6508f56becb8fa.png"
+LEGACY_FOOTER_IMAGE_URL = "https://pic1.imgdb.cn/item/69e5f9e51d6508f56bec8ea5.png"
+HEADER_IMAGE_URL = ""
+FOOTER_IMAGE_URL = ""
+DEFAULT_HEADER_IMAGE_FILE = "assets/default_header.png"
+DEFAULT_FOOTER_IMAGE_FILE = "assets/default_footer.png"
+IMAGE_KINDS = {"header": "顶部图片", "footer": "底部图片"}
+IMAGE_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
 REFERENCE_SEGMENT_TYPES = {"reply", "quote", "source", "reference"}
 PAGE_SETTINGS_DEFAULTS = {
     "time_x": 30,
@@ -53,6 +65,8 @@ PAGE_SETTINGS_DEFAULTS = {
     "group_x": 56,
     "group_y": 45,
     "font_path": "",
+    "header_image_path": "",
+    "footer_image_path": "",
 }
 
 
@@ -451,6 +465,18 @@ class WhoAtMePlugin(Star):
                     ["POST"],
                     "谁艾特我Pro删除字体",
                 )
+                context.register_web_api(
+                    f"/{prefix}/images/upload",
+                    self.page_image_upload,
+                    ["POST"],
+                    "谁艾特我Pro上传渲染图片",
+                )
+                context.register_web_api(
+                    f"/{prefix}/images/reset",
+                    self.page_image_reset,
+                    ["POST"],
+                    "谁艾特我Pro恢复默认渲染图片",
+                )
         except Exception as exc:
             logger.warning(f"[谁艾特我] 注册 Page API 失败: {exc}")
 
@@ -648,6 +674,87 @@ class WhoAtMePlugin(Star):
         except Exception as exc:
             logger.error(f"[谁艾特我] Page删除字体失败: {exc}", exc_info=True)
             return self._json_response({"status": "error", "message": "删除字体失败"})
+
+    async def page_image_upload(self):
+        try:
+            from quart import request
+
+            if not self._is_same_origin_request(request):
+                return self._json_response({"status": "error", "message": "请求来源无效"})
+
+            kind = ""
+            filename = ""
+            data = None
+            files = await request.files
+            file = files.get("image") if files else None
+            if file and getattr(file, "filename", ""):
+                filename = str(file.filename)
+                form = await request.form
+                kind = str(form.get("kind") or "")
+                data = file.read()
+                if hasattr(data, "__await__"):
+                    data = await data
+            else:
+                payload = await request.get_json(silent=True)
+                if isinstance(payload, dict):
+                    kind = str(payload.get("kind") or "")
+                    filename = str(payload.get("filename") or "")
+                    content = str(payload.get("content") or "")
+                    if "," in content:
+                        content = content.split(",", 1)[1]
+                    try:
+                        data = base64.b64decode(content, validate=True)
+                    except Exception:
+                        return self._json_response({"status": "error", "message": "图片文件内容无效"})
+
+            kind = kind.strip().lower()
+            if kind not in IMAGE_KINDS:
+                return self._json_response({"status": "error", "message": "图片类型无效"})
+            if not filename:
+                return self._json_response({"status": "error", "message": "请选择图片文件"})
+            if not self._is_allowed_image_file(filename):
+                return self._json_response({"status": "error", "message": "仅支持 .png/.jpg/.jpeg/.webp/.gif 图片"})
+            if not data:
+                return self._json_response({"status": "error", "message": "图片文件为空"})
+            if len(data) > 15 * 1024 * 1024:
+                return self._json_response({"status": "error", "message": "图片文件不能超过15MB"})
+
+            images_dir = self._images_dir()
+            images_dir.mkdir(parents=True, exist_ok=True)
+            suffix = Path(filename).suffix.lower()
+            target = images_dir / f"{kind}{suffix}"
+            for old in images_dir.glob(f"{kind}.*"):
+                try:
+                    if old.is_file():
+                        old.unlink()
+                except OSError:
+                    pass
+            target.write_bytes(data)
+
+            self._save_image_path(kind, self._image_config_path(target.name))
+            logger.info(f"[谁艾特我] Page上传并启用自定义{IMAGE_KINDS[kind]}: {target.name}")
+            return self._json_response({"status": "ok", "message": "图片已上传并启用", "data": self._page_data()})
+        except Exception as exc:
+            logger.error(f"[谁艾特我] Page上传图片失败: {exc}", exc_info=True)
+            return self._json_response({"status": "error", "message": "上传图片失败"})
+
+    async def page_image_reset(self):
+        try:
+            from quart import request
+
+            if not self._is_same_origin_request(request):
+                return self._json_response({"status": "error", "message": "请求来源无效"})
+
+            payload = await request.get_json(silent=True)
+            kind = str((payload.get("kind") or "") if isinstance(payload, dict) else "").strip().lower()
+            kinds = [kind] if kind in IMAGE_KINDS else list(IMAGE_KINDS)
+            for item in kinds:
+                self._save_image_path(item, "", save=False)
+            self._save_page_settings()
+            return self._json_response({"status": "ok", "message": "图片已恢复默认", "data": self._page_data()})
+        except Exception as exc:
+            logger.error(f"[谁艾特我] Page恢复默认图片失败: {exc}", exc_info=True)
+            return self._json_response({"status": "error", "message": "恢复默认图片失败"})
 
     async def _handle_command(
         self,
@@ -2516,10 +2623,7 @@ class WhoAtMePlugin(Star):
     def _page_data(self) -> dict[str, Any]:
         data = self._font_data()
         data["layout"] = self._render_layout()
-        data["images"] = {
-            "header": self._header_image_url(),
-            "footer": self._footer_image_url(),
-        }
+        data["images"] = self._image_data()
         return data
 
     def _font_data(self) -> dict[str, Any]:
@@ -2545,6 +2649,9 @@ class WhoAtMePlugin(Star):
     def _fonts_dir(self) -> Path:
         return self._plugin_data_dir() / "resources" / "fonts"
 
+    def _images_dir(self) -> Path:
+        return self._plugin_data_dir() / "resources" / "images"
+
     def _load_page_settings(self) -> dict[str, Any]:
         settings = dict(PAGE_SETTINGS_DEFAULTS)
         path = self._page_settings_file()
@@ -2557,6 +2664,9 @@ class WhoAtMePlugin(Star):
             logger.warning(f"[谁艾特我] 读取 Page 设置失败，使用默认值: {exc}")
         settings.update(self._sanitize_layout_settings(settings))
         settings["font_path"] = str(settings.get("font_path") or "").strip()
+        for kind in IMAGE_KINDS:
+            key = self._image_setting_key(kind)
+            settings[key] = str(settings.get(key) or "").strip()
         return settings
 
     def _save_page_settings(self) -> None:
@@ -2611,6 +2721,9 @@ class WhoAtMePlugin(Star):
     def _is_allowed_font_file(self, filename: str) -> bool:
         return Path(str(filename or "")).suffix.lower() in {".ttf", ".otf", ".woff", ".woff2", ".ttc"}
 
+    def _is_allowed_image_file(self, filename: str) -> bool:
+        return Path(str(filename or "")).suffix.lower() in IMAGE_MIME_TYPES
+
     def _format_file_size(self, size: int) -> str:
         if size < 1024 * 1024:
             return f"{size / 1024:.1f}KB"
@@ -2619,8 +2732,15 @@ class WhoAtMePlugin(Star):
     def _font_config_path(self, filename: str) -> str:
         return f"resources/fonts/{filename}"
 
+    def _image_config_path(self, filename: str) -> str:
+        return f"resources/images/{filename}"
+
     def _selected_font_name(self, font_path: str) -> str:
         text = str(font_path or "").replace("\\", "/").strip()
+        return Path(text).name if text else ""
+
+    def _selected_image_name(self, image_path: str) -> str:
+        text = str(image_path or "").replace("\\", "/").strip()
         return Path(text).name if text else ""
 
     def _list_uploaded_fonts(self) -> list[dict[str, Any]]:
@@ -2653,6 +2773,17 @@ class WhoAtMePlugin(Star):
         self._font_css_cache_key = None
         self._font_css_cache_value = ""
         self._save_page_settings()
+
+    def _save_image_path(self, kind: str, image_path: str, *, save: bool = True) -> None:
+        if kind not in IMAGE_KINDS:
+            return
+        image_path = str(image_path or "").strip()
+        if image_path:
+            image_name = self._selected_image_name(image_path)
+            image_path = self._image_config_path(image_name) if image_name else ""
+        self.page_settings[self._image_setting_key(kind)] = image_path
+        if save:
+            self._save_page_settings()
 
     def _resolve_custom_font_path(self) -> Path | None:
         font_path = str(self.page_settings.get("font_path") or "").strip()
@@ -2726,6 +2857,88 @@ class WhoAtMePlugin(Star):
         self._font_css_cache_value = css
         return css
 
+    def _image_setting_key(self, kind: str) -> str:
+        return f"{kind}_image_path"
+
+    def _image_data(self) -> dict[str, Any]:
+        return {
+            "header": self._header_image_url(),
+            "footer": self._footer_image_url(),
+            "header_source": self._image_source_label("header"),
+            "footer_source": self._image_source_label("footer"),
+        }
+
+    def _image_source_label(self, kind: str) -> str:
+        if self._resolve_custom_image_path(kind):
+            return "Page自定义图片"
+        configured = self._configured_image_value(kind)
+        if configured:
+            return "Web配置图片"
+        return "插件内置本地图片"
+
+    def _configured_image_value(self, kind: str) -> str:
+        key = "header_image_url" if kind == "header" else "footer_image_url"
+        value = self._config_str("render", key, default="").strip()
+        if value in {LEGACY_HEADER_IMAGE_URL, LEGACY_FOOTER_IMAGE_URL}:
+            return ""
+        return value
+
+    def _resolve_custom_image_path(self, kind: str) -> Path | None:
+        image_path = str(self.page_settings.get(self._image_setting_key(kind)) or "").strip()
+        if not image_path:
+            return None
+        return self._resolve_local_image_path(image_path)
+
+    def _resolve_configured_image_path(self, value: str) -> Path | None:
+        text = str(value or "").strip()
+        if not text or re.match(r"^(https?://|data:image/)", text, re.I):
+            return None
+        return self._resolve_local_image_path(text)
+
+    def _resolve_local_image_path(self, value: str) -> Path | None:
+        raw_path = Path(str(value or "").strip()).expanduser()
+        candidates = [raw_path] if raw_path.is_absolute() else [
+            self._plugin_data_dir() / raw_path,
+            self._images_dir() / raw_path.name,
+            Path(__file__).resolve().parent / raw_path,
+            Path(__file__).resolve().parent / "assets" / raw_path.name,
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.exists() and candidate.is_file():
+                    return candidate.resolve()
+            except OSError:
+                continue
+        return None
+
+    def _default_image_path(self, kind: str) -> Path:
+        filename = DEFAULT_HEADER_IMAGE_FILE if kind == "header" else DEFAULT_FOOTER_IMAGE_FILE
+        return Path(__file__).resolve().parent / filename
+
+    def _image_src(self, kind: str) -> str:
+        custom_path = self._resolve_custom_image_path(kind)
+        if custom_path:
+            return self._image_file_data_url(custom_path)
+
+        configured = self._configured_image_value(kind)
+        if configured:
+            configured_path = self._resolve_configured_image_path(configured)
+            if configured_path:
+                return self._image_file_data_url(configured_path)
+            return configured
+
+        return self._image_file_data_url(self._default_image_path(kind))
+
+    def _image_file_data_url(self, path: Path) -> str:
+        try:
+            suffix = path.suffix.lower()
+            mime = IMAGE_MIME_TYPES.get(suffix, "image/png")
+            data = base64.b64encode(path.read_bytes()).decode("ascii")
+            return f"data:{mime};base64,{data}"
+        except OSError as exc:
+            logger.warning(f"[谁艾特我] 读取本地图片失败: {path} {exc}")
+            return ""
+
     def _format_template(self, template: str, **kwargs: Any) -> str:
         try:
             return template.format(**kwargs)
@@ -2761,10 +2974,10 @@ class WhoAtMePlugin(Star):
         return max(3, self._config_int("render", "browser_timeout_seconds", default=RENDER_TASK_TIMEOUT_SEC))
 
     def _header_image_url(self) -> str:
-        return self._config_str("render", "header_image_url", default=HEADER_IMAGE_URL)
+        return self._image_src("header")
 
     def _footer_image_url(self) -> str:
-        return self._config_str("render", "footer_image_url", default=FOOTER_IMAGE_URL)
+        return self._image_src("footer")
 
     def _reminder_away_seconds(self) -> int:
         return max(0, self._config_int("reminder", "away_minutes", default=10)) * 60
