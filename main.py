@@ -1068,8 +1068,13 @@ class WhoAtMePlugin(Star):
                     self._render_html_with_browser(HTML_TEMPLATE, data),
                     timeout=timeout,
                 )
+            except asyncio.TimeoutError:
+                logger.warning(f"[谁艾特我] 浏览器直渲超过 {timeout} 秒，回退到 AstrBot html_render")
             except Exception as exc:
-                logger.warning(f"[谁艾特我] 浏览器直渲失败，回退到 AstrBot html_render: {exc}")
+                logger.warning(
+                    f"[谁艾特我] 浏览器直渲失败，回退到 AstrBot html_render: {type(exc).__name__}: {exc}",
+                    exc_info=True,
+                )
         return await asyncio.wait_for(
             self.html_render(
                 HTML_TEMPLATE,
@@ -1217,13 +1222,19 @@ class WhoAtMePlugin(Star):
         browser = None
         async with async_playwright() as playwright:
             try:
-                browser = await playwright.chromium.launch()
+                browser = await playwright.chromium.launch(
+                    args=["--disable-dev-shm-usage", "--disable-gpu", "--no-sandbox"]
+                )
                 page = await browser.new_page(
                     viewport={"width": 600, "height": 800},
                     device_scale_factor=2,
                 )
-                await page.set_content(html_text, wait_until="load", timeout=self._render_page_timeout_ms())
-                await page.wait_for_timeout(500)
+                await page.set_content(
+                    html_text,
+                    wait_until="domcontentloaded",
+                    timeout=self._render_page_timeout_ms(),
+                )
+                await self._wait_for_browser_assets(page)
                 element = await page.query_selector(".app")
                 if element:
                     await element.screenshot(
@@ -1242,6 +1253,45 @@ class WhoAtMePlugin(Star):
                 if browser:
                     await browser.close()
         return str(output_path)
+
+    async def _wait_for_browser_assets(self, page: Any) -> None:
+        asset_timeout = min(10000, max(1000, self._render_page_timeout_ms() // 2))
+        try:
+            await page.evaluate(
+                """
+                async (assetTimeout) => {
+                  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+                  if (document.fonts && document.fonts.ready) {
+                    await Promise.race([document.fonts.ready.catch(() => {}), delay(Math.min(assetTimeout, 1500))]);
+                  }
+
+                  const images = Array.from(document.images || []);
+                  await Promise.race([
+                    Promise.all(images.map((img) => new Promise((resolve) => {
+                      if (img.complete) {
+                        resolve();
+                        return;
+                      }
+                      const done = () => resolve();
+                      img.addEventListener("load", done, { once: true });
+                      img.addEventListener("error", done, { once: true });
+                    }))),
+                    delay(assetTimeout),
+                  ]);
+
+                  for (const img of images) {
+                    const optional = img.classList.contains("msg-img") || img.classList.contains("quote-img");
+                    if (optional && (!img.complete || img.naturalWidth === 0)) {
+                      img.remove();
+                    }
+                  }
+                }
+                """,
+                asset_timeout,
+            )
+            await page.wait_for_timeout(300)
+        except Exception as exc:
+            logger.debug(f"[谁艾特我] 等待浏览器资源加载失败，继续截图: {type(exc).__name__}: {exc}")
 
     def _new_render_path(self) -> Path:
         render_dir = self._render_dir()
