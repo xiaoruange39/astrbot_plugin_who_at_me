@@ -11,8 +11,6 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
-from urllib.request import urlopen
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -81,6 +79,7 @@ HTML_TEMPLATE = r"""
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=600, initial-scale=1.0" />
   <style>
     {{ custom_font_css | safe }}
     html, body {
@@ -1204,8 +1203,7 @@ class WhoAtMePlugin(Star):
                     f"[谁艾特我] 浏览器直渲失败，回退到 AstrBot html_render: {type(exc).__name__}: {exc}",
                     exc_info=True,
                 )
-        rendered = await asyncio.wait_for(self._render_html_with_t2i(HTML_TEMPLATE, data), timeout=timeout)
-        return self._crop_html_render_image(rendered)
+        return await asyncio.wait_for(self._render_html_with_t2i(HTML_TEMPLATE, data), timeout=timeout)
 
     async def _try_send(self, event: AstrMessageEvent, result: Any) -> bool:
         try:
@@ -1372,21 +1370,105 @@ class WhoAtMePlugin(Star):
                     await browser.close()
         return str(output_path)
 
-    async def _render_html_with_t2i(self, template: str, data: dict[str, Any]) -> Any:
+    async def _render_html_with_t2i(self, template: str, data: dict[str, Any]) -> str:
         from jinja2 import Environment
 
         self._cleanup_old_renders()
         html_text = Environment(autoescape=True).from_string(template).render(**data)
-        options = {
-            "type": "jpeg",
-            "quality": self._render_quality(),
-            "full_page": True,
-            "timeout": self._render_page_timeout_ms(),
-        }
+
+        last_error: Exception | None = None
+        for options in self._t2i_render_options():
+            try:
+                image_data = await self.html_render(html_text, {}, False, options)
+            except TypeError:
+                try:
+                    rendered = await self.html_render(html_text, {}, options=options)
+                    return str(rendered)
+                except Exception as exc:
+                    last_error = exc
+                    logger.warning(f"[谁艾特我] t2i 渲染失败: {type(exc).__name__}: {exc}")
+                    continue
+            except Exception as exc:
+                last_error = exc
+                logger.warning(f"[谁艾特我] t2i 渲染失败: {type(exc).__name__}: {exc}")
+                continue
+
+            image_path = self._store_t2i_render_result(image_data, str(options.get("type") or ""))
+            if image_path:
+                return image_path
+
+            logger.warning(f"[谁艾特我] t2i 返回了无效图片数据，尝试下一策略: {options}")
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("t2i 渲染没有返回有效图片")
+
+    def _t2i_render_options(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "full_page": True,
+                "type": "png",
+                "device_scale_factor_level": "ultra",
+                "timeout": self._render_page_timeout_ms(),
+            },
+            {
+                "full_page": True,
+                "type": "jpeg",
+                "quality": self._render_quality(),
+                "device_scale_factor_level": "high",
+                "timeout": self._render_page_timeout_ms(),
+            },
+        ]
+
+    def _store_t2i_render_result(self, image_data: Any, image_type: str = "") -> str | None:
+        if isinstance(image_data, bytes | bytearray):
+            return self._store_t2i_image_bytes(bytes(image_data), image_type)
+
+        text = str(image_data or "").strip()
+        if not text:
+            return None
+        if text.startswith("base64://"):
+            try:
+                return self._store_t2i_image_bytes(base64.b64decode(text[len("base64://") :]), image_type)
+            except Exception as exc:
+                logger.warning(f"[谁艾特我] 解析 t2i base64 图片失败: {type(exc).__name__}: {exc}")
+                return None
+        if text.lower().startswith("data:image/"):
+            try:
+                header, payload = text.split(",", 1)
+                source_type = header.split(";", 1)[0].rsplit("/", 1)[-1]
+                return self._store_t2i_image_bytes(base64.b64decode(payload), source_type)
+            except Exception as exc:
+                logger.warning(f"[谁艾特我] 解析 t2i data-uri 图片失败: {type(exc).__name__}: {exc}")
+                return None
+        if text.startswith("<") or "<html" in text[:200].lower():
+            return None
+        return text
+
+    def _store_t2i_image_bytes(self, data: bytes, image_type: str = "") -> str | None:
+        suffix = self._t2i_image_suffix(data, image_type)
+        if not suffix:
+            return None
+
+        output = self._new_render_path(suffix)
         try:
-            return await self.html_render(html_text, {}, False, options)
-        except TypeError:
-            return await self.html_render(html_text, {}, options=options)
+            output.write_bytes(data)
+            return str(output)
+        except Exception as exc:
+            logger.warning(f"[谁艾特我] 保存 t2i 图片失败: {type(exc).__name__}: {exc}")
+            return None
+
+    def _t2i_image_suffix(self, data: bytes, image_type: str = "") -> str:
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return ".png"
+        if data.startswith(b"\xff\xd8"):
+            return ".jpg"
+        if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            return ".webp"
+        image_type = image_type.lower().strip().lstrip(".")
+        if image_type in {"png", "jpg", "jpeg", "webp"}:
+            return ".jpg" if image_type == "jpeg" else f".{image_type}"
+        return ""
 
     async def _wait_for_browser_assets(self, page: Any) -> None:
         asset_timeout = min(10000, max(1000, self._render_page_timeout_ms() // 2))
@@ -1427,129 +1509,11 @@ class WhoAtMePlugin(Star):
         except Exception as exc:
             logger.debug(f"[谁艾特我] 等待浏览器资源加载失败，继续截图: {type(exc).__name__}: {exc}")
 
-    def _crop_html_render_image(self, image_ref: Any) -> str:
-        path = self._local_image_ref_path(image_ref)
-        if not path:
-            return str(image_ref)
-        image_ref_text = str(path)
-        try:
-            from PIL import Image
-        except Exception as exc:
-            logger.debug(f"[谁艾特我] Pillow 不可用，跳过 t2i 裁剪: {type(exc).__name__}: {exc}")
-            return image_ref_text
-
-        try:
-            with Image.open(path) as image:
-                crop_width = self._detect_render_content_width(image)
-                if image.width <= crop_width + 4:
-                    return image_ref_text
-
-                output = self._new_render_path()
-                frame = image.convert("RGB").crop((0, 0, crop_width, image.height))
-                frame.save(output, format="JPEG", quality=self._render_quality())
-                logger.debug(f"[谁艾特我] 已裁剪 t2i 图片宽度: {image.width} -> {crop_width}")
-                return str(output)
-        except Exception as exc:
-            logger.warning(f"[谁艾特我] 裁剪 t2i 图片失败，使用原图: {type(exc).__name__}: {exc}")
-            return image_ref_text
-
-    def _local_image_ref_path(self, image_ref: Any) -> Path | None:
-        if isinstance(image_ref, bytes | bytearray):
-            return self._store_render_bytes(bytes(image_ref))
-
-        text = str(image_ref or "").strip()
-        if not text:
-            return None
-        if text.startswith("base64://"):
-            try:
-                return self._store_render_bytes(base64.b64decode(text[len("base64://") :]))
-            except Exception as exc:
-                logger.debug(f"[谁艾特我] 解析 base64 t2i 图片失败: {type(exc).__name__}: {exc}")
-                return None
-        if text.lower().startswith("data:image/"):
-            try:
-                _, payload = text.split(",", 1)
-                return self._store_render_bytes(base64.b64decode(payload))
-            except Exception as exc:
-                logger.debug(f"[谁艾特我] 解析 data-uri t2i 图片失败: {type(exc).__name__}: {exc}")
-                return None
-        if re.match(r"^https?://", text, re.I):
-            return self._download_render_image(text)
-        if text.lower().startswith("file:"):
-            parsed = urlparse(text)
-            path_text = unquote(parsed.path or "")
-            if re.match(r"^/[A-Za-z]:", path_text):
-                path_text = path_text[1:]
-            path = Path(path_text)
-        else:
-            path = Path(text)
-        try:
-            return path if path.is_file() else None
-        except OSError:
-            return None
-
-    def _store_render_bytes(self, data: bytes) -> Path | None:
-        if not data:
-            return None
-        try:
-            output = self._new_render_path()
-            output.write_bytes(data)
-            return output if output.is_file() else None
-        except Exception as exc:
-            logger.debug(f"[谁艾特我] 保存 t2i 图片失败: {type(exc).__name__}: {exc}")
-            return None
-
-    def _download_render_image(self, url: str) -> Path | None:
-        try:
-            output = self._new_render_path()
-            with urlopen(url, timeout=max(3, self._render_task_timeout_sec())) as response:
-                output.write_bytes(response.read())
-            return output if output.is_file() else None
-        except Exception as exc:
-            logger.debug(f"[谁艾特我] 下载 t2i 图片用于裁剪失败: {type(exc).__name__}: {exc}")
-            return None
-
-    def _detect_render_content_width(self, image: Any) -> int:
-        width, height = image.size
-        if width <= 640:
-            return width
-
-        rgb = image.convert("RGB")
-        bg = self._right_edge_average_color(rgb)
-        sample_ys = set(range(0, min(height, 170), 5))
-        sample_ys.update(range(max(0, height - 130), height, 5))
-        sample_ys.update(range(0, height, 40))
-
-        rightmost = 0
-        for x in range(width - 1, -1, -1):
-            if any(self._color_distance(rgb.getpixel((x, y)), bg) > 18 for y in sample_ys):
-                rightmost = x
-                break
-
-        detected = min(width, max(1, rightmost + 4))
-        if 520 <= detected <= 680:
-            return 600
-        if detected < 420 and width > 700:
-            return 600
-        return detected
-
-    def _right_edge_average_color(self, image: Any) -> tuple[int, int, int]:
-        width, height = image.size
-        pixels = []
-        for x in range(max(0, width - 8), width):
-            for y in range(0, height, max(1, height // 80)):
-                pixels.append(image.getpixel((x, y)))
-        if not pixels:
-            return (242, 243, 245)
-        return tuple(int(sum(pixel[idx] for pixel in pixels) / len(pixels)) for idx in range(3))
-
-    def _color_distance(self, left: tuple[int, int, int], right: tuple[int, int, int]) -> int:
-        return max(abs(int(left[idx]) - int(right[idx])) for idx in range(3))
-
-    def _new_render_path(self) -> Path:
+    def _new_render_path(self, suffix: str = ".jpg") -> Path:
         render_dir = self._render_dir()
         render_dir.mkdir(parents=True, exist_ok=True)
-        return render_dir / f"who_at_me_{int(time.time())}_{uuid.uuid4().hex}.jpg"
+        suffix = suffix if suffix.startswith(".") else f".{suffix}"
+        return render_dir / f"who_at_me_{int(time.time())}_{uuid.uuid4().hex}{suffix}"
 
     def _render_dir(self) -> Path:
         try:
@@ -1564,8 +1528,10 @@ class WhoAtMePlugin(Star):
         if not render_dir.exists():
             return
         expire_before = time.time() - self._config_int("render", "cleanup_render_hours", default=24) * 60 * 60
-        for path in render_dir.glob("who_at_me_*.jpg"):
+        for path in render_dir.glob("who_at_me_*.*"):
             try:
+                if path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+                    continue
                 if path.stat().st_mtime < expire_before:
                     path.unlink()
             except OSError:
