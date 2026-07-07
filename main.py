@@ -59,6 +59,7 @@ IMAGE_MIME_TYPES = {
     ".gif": "image/gif",
 }
 REFERENCE_SEGMENT_TYPES = {"reply", "quote", "source", "reference"}
+POKE_SEGMENT_TYPES = {"poke", "nudge", "touch", "pat"}
 PAGE_SETTINGS_DEFAULTS = {
     "time_x": 30,
     "time_y": 7,
@@ -325,6 +326,29 @@ HTML_TEMPLATE = r"""
       font-size: 12px;
       font-weight: 700;
     }
+    .poke-row {
+      display: flex;
+      justify-content: center;
+      margin: 2px 0 22px 0;
+    }
+    .poke-pill {
+      display: inline-flex;
+      align-items: center;
+      max-width: 82%;
+      padding: 4px 10px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.86);
+      color: #999;
+      font-size: 13px;
+      line-height: 1.35;
+      font-weight: 700;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+      overflow-wrap: anywhere;
+    }
+    .poke-name {
+      color: #1e6fff;
+      font-weight: 800;
+    }
     .block-divider {
       display: flex;
       align-items: center;
@@ -375,51 +399,61 @@ HTML_TEMPLATE = r"""
         <div class="msg-block">
           {% for msg in block.msgs %}
             <div class="msg-item">
-              <div class="msg-body">
-                {% if msg.avatar %}
-                  <img src="{{ msg.avatar }}" class="avatar" />
-                {% else %}
-                  <div class="avatar-fallback">{{ msg.initial }}</div>
-                {% endif %}
-                <div class="msg-content">
-                  <div class="msg-info">
-                    {% if msg.tag_text %}<span class="tag-pill" style="background: {{ msg.tag_color }}">{{ msg.tag_text }}</span>{% endif %}
-                    <span class="nickname">{{ msg.nickname }}</span>
+              {% if msg.is_poke %}
+                <div class="poke-row">
+                  <div class="poke-pill">
+                    <span class="poke-name">{{ msg.poke_actor }}</span>
+                    <span>&nbsp;{{ msg.poke_action }}&nbsp;</span>
+                    <span class="poke-name">{{ msg.poke_target }}</span>
                   </div>
-                  <div class="msg-bubble {% if msg.is_at %}is-at{% endif %}">
-                    {% if msg.quote %}
-                      <div class="quote-card">
-                        <div class="quote-body">
-                          <div class="quote-head">
-                            <span class="quote-name">{{ msg.quote.nickname }}</span>
-                            {% if msg.quote.time_text %}<span class="quote-time">{{ msg.quote.time_text }}</span>{% endif %}
-                          </div>
-                          {% if msg.quote.message_html %}
-                            <div class="quote-text">{{ msg.quote.message_html | safe }}</div>
-                          {% endif %}
-                          {% if msg.quote.images %}
-                            <div class="quote-images">
-                              {% for image in msg.quote.images %}
-                                <img src="{{ image }}" class="quote-img" onerror="this.remove()" />
-                              {% endfor %}
-                            </div>
-                          {% endif %}
-                        </div>
-                      </div>
-                    {% endif %}
-                    {% if msg.is_at or msg.has_message %}
-                      <div class="msg-text">
-                        {% if msg.is_at %}<span class="at-text">@{{ target_name }}</span>{% endif %}
-                        {% if msg.has_message %}{{ msg.message_html | safe }}{% endif %}
-                      </div>
-                    {% endif %}
-                    {% for image in msg.images %}
-                      <img src="{{ image }}" class="msg-img" onerror="this.remove()" />
-                    {% endfor %}
-                  </div>
-                  <div class="msg-time-bottom">{{ msg.time_text }}</div>
                 </div>
-              </div>
+              {% else %}
+                <div class="msg-body">
+                  {% if msg.avatar %}
+                    <img src="{{ msg.avatar }}" class="avatar" />
+                  {% else %}
+                    <div class="avatar-fallback">{{ msg.initial }}</div>
+                  {% endif %}
+                  <div class="msg-content">
+                    <div class="msg-info">
+                      {% if msg.tag_text %}<span class="tag-pill" style="background: {{ msg.tag_color }}">{{ msg.tag_text }}</span>{% endif %}
+                      <span class="nickname">{{ msg.nickname }}</span>
+                    </div>
+                    <div class="msg-bubble {% if msg.is_at %}is-at{% endif %}">
+                      {% if msg.quote %}
+                        <div class="quote-card">
+                          <div class="quote-body">
+                            <div class="quote-head">
+                              <span class="quote-name">{{ msg.quote.nickname }}</span>
+                              {% if msg.quote.time_text %}<span class="quote-time">{{ msg.quote.time_text }}</span>{% endif %}
+                            </div>
+                            {% if msg.quote.message_html %}
+                              <div class="quote-text">{{ msg.quote.message_html | safe }}</div>
+                            {% endif %}
+                            {% if msg.quote.images %}
+                              <div class="quote-images">
+                                {% for image in msg.quote.images %}
+                                  <img src="{{ image }}" class="quote-img" onerror="this.remove()" />
+                                {% endfor %}
+                              </div>
+                            {% endif %}
+                          </div>
+                        </div>
+                      {% endif %}
+                      {% if msg.is_at or msg.has_message %}
+                        <div class="msg-text">
+                          {% if msg.is_at %}<span class="at-text">@{{ target_name }}</span>{% endif %}
+                          {% if msg.has_message %}{{ msg.message_html | safe }}{% endif %}
+                        </div>
+                      {% endif %}
+                      {% for image in msg.images %}
+                        <img src="{{ image }}" class="msg-img" onerror="this.remove()" />
+                      {% endfor %}
+                    </div>
+                    <div class="msg-time-bottom">{{ msg.time_text }}</div>
+                  </div>
+                </div>
+              {% endif %}
             </div>
           {% endfor %}
         </div>
@@ -1786,15 +1820,17 @@ class WhoAtMePlugin(Star):
         return self._dedupe_block_context(blocks)
 
     def _view_message(self, data: dict[str, Any], is_at: bool, target_name: str) -> dict[str, Any]:
-        nickname = str(data.get("name") or data.get("user_id") or data.get("User") or "用户")
+        user_id = str(data.get("user_id") or data.get("User") or "")
+        nickname = self._display_name(data.get("name"), data.get("nickname"), user_id, default="用户")
+        poke = data.get("poke") if isinstance(data.get("poke"), dict) else None
         message = str(data.get("message") or "")
         if is_at:
             message = self._strip_at_display(message, [target_name, data.get("target"), data.get("at"), data.get("AtQQ")])
+        images = self._renderable_images(data.get("images") or data.get("image") or [])
         role = str(data.get("role") or "member").lower()
         role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "群员")
         title = str(data.get("title") or "")
         member_title = str(data.get("member_title") or title or "")
-        user_id = str(data.get("user_id") or data.get("User") or "")
         level = self._level_text(data.get("level"))
         identity_text = member_title or role_text
         tag_parts = [f"LV{level}"] if level else []
@@ -1816,7 +1852,7 @@ class WhoAtMePlugin(Star):
             "message": message,
             "has_message": bool(message.strip()),
             "message_html": html.escape(message).replace("\n", "<br>"),
-            "images": self._renderable_images(data.get("images") or data.get("image") or []),
+            "images": images,
             "quote": self._view_quote(data.get("quote")),
             "time": data.get("time", 0),
             "time_text": self._time_text(data.get("time", 0)),
@@ -1827,6 +1863,10 @@ class WhoAtMePlugin(Star):
             "level": level,
             "tag_text": tag_text,
             "tag_color": tag_color,
+            "is_poke": bool(poke),
+            "poke_actor": self._display_name((poke or {}).get("actor"), nickname),
+            "poke_target": self._display_name((poke or {}).get("target"), default="对方"),
+            "poke_action": str((poke or {}).get("action") or "👋 拍了拍"),
         }
 
     def _view_quote(self, quote: Any) -> dict[str, Any] | None:
@@ -1836,7 +1876,7 @@ class WhoAtMePlugin(Star):
         images = self._renderable_images(quote.get("images") or quote.get("image") or [])
         if not message and not images:
             return None
-        nickname = str(quote.get("name") or quote.get("nickname") or quote.get("user_id") or "引用消息")
+        nickname = self._display_name(quote.get("name"), quote.get("nickname"), quote.get("user_id"), default="引用消息")
         return {
             "nickname": nickname,
             "message": message,
@@ -1844,6 +1884,13 @@ class WhoAtMePlugin(Star):
             "images": images[:3],
             "time_text": self._time_text(quote.get("time", 0)),
         }
+
+    def _display_name(self, *values: Any, default: str = "用户") -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if text and text.lower() not in {"none", "null", "undefined"}:
+                return text
+        return default
 
     def _dedupe_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -1931,11 +1978,15 @@ class WhoAtMePlugin(Star):
         sender = getattr(event.message_obj, "sender", None)
         member_info = member_info or {}
         role = str(member_info.get("role") or getattr(sender, "role", "") or self._raw_sender_value(event, "role") or "member")
+        sender_name = self._display_name(member_info.get("card"), member_info.get("nickname"), self._sender_name(event), sender_id)
+        images = self._images(event)
+        message = self._message_text_for_record(event, mentions or [])
+        poke = self._poke_message(event, sender_name)
         record = {
             "user_id": sender_id,
-            "message": self._message_text_for_record(event, mentions or []),
-            "images": self._images(event),
-            "name": member_info.get("card") or member_info.get("nickname") or self._sender_name(event),
+            "message": message,
+            "images": images,
+            "name": sender_name,
             "role": role,
             "title": member_info.get("title") or "",
             "member_title": member_info.get("member_title") or "",
@@ -1943,6 +1994,8 @@ class WhoAtMePlugin(Star):
             "time": self._timestamp(event),
             "message_id": str(getattr(event.message_obj, "message_id", "") or ""),
         }
+        if poke:
+            record["poke"] = poke
         if quote:
             record["quote"] = quote
         return record
@@ -1965,6 +2018,8 @@ class WhoAtMePlugin(Star):
             "level": record.get("level") or "",
             "time": record["time"],
         }
+        if record.get("poke"):
+            context["poke"] = record["poke"]
         if record.get("quote"):
             context["quote"] = record["quote"]
         return context
@@ -2156,13 +2211,105 @@ class WhoAtMePlugin(Star):
         return str(getattr(event, "message_str", "") or getattr(event.message_obj, "message_str", "") or "").strip()
 
     def _message_text_for_record(self, event: AstrMessageEvent, mentions: list[str]) -> str:
+        include_at = not mentions
         raw_segments = self._raw_message_segments(event)
         if raw_segments:
-            text = self._segments_text(raw_segments)
+            text = self._segments_text(raw_segments, include_at=include_at)
         else:
-            text = self._segments_text(self._message_chain(event)) or self._message_text(event)
+            text = self._segments_text(self._message_chain(event), include_at=include_at) or self._message_text(event)
 
-        return self._strip_at_display(self._strip_cq_display(text), mentions)
+        text = self._strip_cq_display(text)
+        return self._strip_at_display(text, mentions) if mentions else text
+
+    def _poke_message(self, event: AstrMessageEvent, sender_name: str) -> dict[str, str] | None:
+        raw = getattr(event.message_obj, "raw_message", None)
+        if isinstance(raw, dict):
+            poke = self._poke_from_mapping(raw, sender_name)
+            if poke:
+                return poke
+
+        for segment in [*self._raw_message_segments(event), *self._message_chain(event)]:
+            poke = self._poke_from_segment(segment, sender_name)
+            if poke:
+                return poke
+        return None
+
+    def _poke_from_segment(self, segment: Any, sender_name: str) -> dict[str, str] | None:
+        data = self._segment_data(segment)
+        if not data and not isinstance(segment, dict):
+            names = [
+                "type",
+                "seg_type",
+                "sub_type",
+                "subType",
+                "notice_type",
+                "noticeType",
+                "operator_name",
+                "operatorName",
+                "sender_name",
+                "senderName",
+                "from_name",
+                "fromName",
+                "target_name",
+                "targetName",
+                "receiver_name",
+                "receiverName",
+                "to_name",
+                "toName",
+                "target_id",
+                "targetId",
+                "target",
+                "qq",
+            ]
+            data = {name: getattr(segment, name, None) for name in names}
+        if not isinstance(data, dict):
+            return None
+        data = dict(data)
+        data.setdefault("type", self._segment_type(segment))
+        return self._poke_from_mapping(data, sender_name)
+
+    def _poke_from_mapping(self, data: dict[str, Any], sender_name: str) -> dict[str, str] | None:
+        seg_type = str(data.get("type") or data.get("seg_type") or data.get("notice_type") or "").lower()
+        sub_type = str(data.get("sub_type") or data.get("subType") or data.get("notice_type") or data.get("noticeType") or "").lower()
+        if seg_type not in POKE_SEGMENT_TYPES and sub_type not in POKE_SEGMENT_TYPES:
+            return None
+
+        actor = self._display_name(
+            data.get("operator_name"),
+            data.get("operatorName"),
+            data.get("sender_name"),
+            data.get("senderName"),
+            data.get("from_name"),
+            data.get("fromName"),
+            data.get("source_name"),
+            data.get("sourceName"),
+            data.get("card"),
+            data.get("nickname"),
+            data.get("name"),
+            sender_name,
+        )
+        target = self._display_name(
+            data.get("target_name"),
+            data.get("targetName"),
+            data.get("receiver_name"),
+            data.get("receiverName"),
+            data.get("to_name"),
+            data.get("toName"),
+            data.get("poked_name"),
+            data.get("pokedName"),
+            data.get("target_card"),
+            data.get("targetCard"),
+            data.get("target_nickname"),
+            data.get("targetNickname"),
+            data.get("target_id"),
+            data.get("targetId"),
+            data.get("target"),
+            data.get("receiver_id"),
+            data.get("receiverId"),
+            data.get("qq"),
+            default="对方",
+        )
+        return {"actor": actor, "target": target, "action": "👋 拍了拍"}
 
     def _strip_at_display(self, text: str, mentions: list[str]) -> str:
         cleaned = re.sub(r"\[CQ:at,[^\]]+\]", " ", text)
@@ -2211,7 +2358,10 @@ class WhoAtMePlugin(Star):
                 if value:
                     texts.append(str(value))
             elif include_at and seg_type == "at":
-                value = self._segment_value(segment, ["name", "display", "qq", "user_id", "target", "id"])
+                value = self._segment_value(
+                    segment,
+                    ["name", "display", "text", "nickname", "card", "qq", "user_id", "target", "id"],
+                )
                 if value:
                     texts.append(f"@{value}")
         return "".join(texts).strip()
@@ -2254,9 +2404,21 @@ class WhoAtMePlugin(Star):
     def _strip_cq_display(self, text: str) -> str:
         cleaned = re.sub(r"\[CQ:reply,[^\]]+\]", " ", text)
         cleaned = re.sub(r"\[CQ:image,[^\]]+\]", " ", cleaned)
-        cleaned = re.sub(r"\[CQ:at,qq=([^,\]]+)[^\]]*\]", r"@\1", cleaned)
+        cleaned = re.sub(r"\[CQ:at,([^\]]+)\]", self._cq_at_display, cleaned)
         cleaned = re.sub(r"\[CQ:[^\]]+\]", " ", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
+
+    def _cq_at_display(self, match: re.Match[str]) -> str:
+        data = self._parse_cq_attrs(match.group(1))
+        value = (
+            data.get("name")
+            or data.get("display")
+            or data.get("text")
+            or data.get("nickname")
+            or data.get("card")
+            or data.get("qq")
+        )
+        return f"@{value}" if value else " "
 
     def _images_from_cq(self, text: str) -> list[str]:
         images = []
@@ -2664,7 +2826,11 @@ class WhoAtMePlugin(Star):
         lines = [f"谁艾特了 {target_name}："]
         for record in records[:20]:
             name = record.get("name") or record.get("user_id") or "用户"
-            msg = record.get("message") or "[无文字]"
+            poke = record.get("poke")
+            if isinstance(poke, dict):
+                msg = f"{poke.get('actor') or name} {poke.get('action') or '拍了拍'} {poke.get('target') or '对方'}"
+            else:
+                msg = record.get("message") or "[无文字]"
             image_count = len(record.get("images") or record.get("image") or [])
             suffix = f"（{image_count} 张图）" if image_count else ""
             lines.append(f"{self._time_text(record.get('time'))} {name}: {msg}{suffix}")
@@ -2696,6 +2862,11 @@ class WhoAtMePlugin(Star):
         return abs(self._record_time(left) - self._record_time(right)) <= window_seconds
 
     def _record_message_key(self, record: dict[str, Any]) -> str:
+        poke = record.get("poke")
+        if isinstance(poke, dict):
+            return "poke:" + self._normalize_record_text(
+                f"{poke.get('actor') or ''}|{poke.get('action') or ''}|{poke.get('target') or ''}"
+            )
         return self._normalize_record_text(record.get("message"))
 
     def _normalize_record_text(self, value: Any) -> str:
