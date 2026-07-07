@@ -562,6 +562,8 @@ class WhoAtMePlugin(Star):
         if sender_id and self_id and sender_id == self_id:
             await self.delete_kv_data(self._reminder_pending_key(group_id, self_id))
             return
+        if sender_id:
+            await self._remember_sender_member(event, group_id, sender_id)
 
         mentions = self._mentions(event)
         if is_plugin_command:
@@ -1082,6 +1084,7 @@ class WhoAtMePlugin(Star):
 
         pending.sort(key=lambda item: item.get("time", 0))
         target_name = await self._target_name(event, group_id, user_id)
+        pending = await self._resolve_record_pokes(event, group_id, pending)
         reminder_text = self._format_template(
             self._config_str(
                 "message",
@@ -1151,6 +1154,7 @@ class WhoAtMePlugin(Star):
         total_records = len(records)
         query_reverse = self._query_reverse_order()
         records = self._select_query_records(records, target_name, reverse=query_reverse)
+        records = await self._resolve_record_pokes(event, group_id, records)
         blocks = self._build_blocks(records, target_name, reverse=query_reverse)
         chunks = self._chunk_blocks(blocks)
         chunks = self._limit_chunks(chunks, self._max_query_pages())
@@ -1600,11 +1604,50 @@ class WhoAtMePlugin(Star):
         pending = await self.get_kv_data(self._reminder_pending_key(group_id, target), [])
         return pending if isinstance(pending, list) else []
 
+    async def _remember_sender_member(self, event: AstrMessageEvent, group_id: str, user_id: str) -> None:
+        if not group_id or not user_id:
+            return
+        info = self._member_info_from_event(event)
+        sender_name = self._sender_name(event)
+        if sender_name and not self._looks_like_numeric_id(sender_name):
+            info.setdefault("nickname", sender_name)
+        if not self._member_info_has_name(info):
+            return
+        await self._remember_member_info(group_id, user_id, info)
+
+    async def _remember_member_info(self, group_id: str, user_id: str, info: dict[str, Any]) -> None:
+        if not group_id or not user_id or not isinstance(info, dict):
+            return
+        data = {
+            "card": str(info.get("card") or ""),
+            "nickname": str(info.get("nickname") or info.get("name") or ""),
+            "name": str(info.get("name") or ""),
+            "time": int(time.time()),
+        }
+        if not self._member_info_has_name(data):
+            return
+        await self.put_kv_data(self._member_cache_key(group_id, user_id), data)
+
+    async def _cached_member_info(self, group_id: str, user_id: str) -> dict[str, Any]:
+        data = await self.get_kv_data(self._member_cache_key(group_id, user_id), {})
+        return data if isinstance(data, dict) else {}
+
+    def _member_info_has_name(self, info: dict[str, Any]) -> bool:
+        for key in ("card", "nickname", "name"):
+            value = info.get(key)
+            if value and not self._looks_like_numeric_id(value):
+                return True
+        return False
+
     async def _member_info(self, event: AstrMessageEvent, group_id: str, user_id: str) -> dict[str, Any]:
         info = self._member_info_from_event(event) if user_id == self._sender_id(event) else {}
         if not user_id:
             return info
-        if info.get("level") and info.get("role") and (info.get("title") or info.get("member_title")):
+        cached = await self._cached_member_info(group_id, user_id)
+        for key, value in cached.items():
+            if value and not info.get(key):
+                info[key] = value
+        if self._member_info_has_name(info) and info.get("level") and info.get("role") and (info.get("title") or info.get("member_title")):
             return info
 
         api_info = await self._call_onebot_action(
@@ -1617,7 +1660,38 @@ class WhoAtMePlugin(Star):
         api_info = self._mapping_data(api_info)
         if api_info:
             info.update(self._member_info_from_mapping(api_info))
+        if not self._member_info_has_name(info):
+            list_info = await self._member_info_from_group_member_list(event, group_id, user_id)
+            if list_info:
+                info.update(list_info)
+        if self._member_info_has_name(info):
+            await self._remember_member_info(group_id, user_id, info)
         return info
+
+    async def _member_info_from_group_member_list(
+        self,
+        event: AstrMessageEvent,
+        group_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        value = await self._call_onebot_action(
+            event,
+            "get_group_member_list",
+            group_id=self._numeric_id(group_id),
+        )
+        data = self._mapping_data(value)
+        if data:
+            members = data.get("members") or data.get("list") or data.get("data")
+        else:
+            members = value
+        if not isinstance(members, list):
+            return {}
+        for member in members:
+            mapping = self._mapping_data(member)
+            member_id = mapping.get("user_id") or mapping.get("userId") or mapping.get("qq") or mapping.get("id")
+            if str(member_id or "") == str(user_id):
+                return self._member_info_from_mapping(mapping)
+        return {}
 
     def _member_info_from_event(self, event: AstrMessageEvent) -> dict[str, Any]:
         sender = getattr(event.message_obj, "sender", None)
@@ -1692,10 +1766,22 @@ class WhoAtMePlugin(Star):
         level = data.get("level") or data.get("member_level") or data.get("qq_level") or data.get("qqLevel")
         if level:
             info["level"] = self._level_text(level)
-        if data.get("card"):
-            info["card"] = str(data["card"])
-        if data.get("nickname") or data.get("name"):
-            info["nickname"] = str(data.get("nickname") or data.get("name"))
+        card = data.get("card") or data.get("card_name") or data.get("cardName") or data.get("group_card") or data.get("groupCard")
+        if card:
+            info["card"] = str(card)
+        nickname = (
+            data.get("nickname")
+            or data.get("nick")
+            or data.get("nickName")
+            or data.get("display_name")
+            or data.get("displayName")
+            or data.get("remark")
+            or data.get("name")
+        )
+        if nickname:
+            info["nickname"] = str(nickname)
+        if data.get("name"):
+            info["name"] = str(data["name"])
         return info
 
     async def _reminder_group_enabled(self, event: AstrMessageEvent, group_id: str) -> bool:
@@ -2419,6 +2505,42 @@ class WhoAtMePlugin(Star):
             poke["target"] = target_id or "对方"
         poke["action"] = self._normalize_poke_action(str(poke.get("action") or ""), str(poke.get("raw_text") or ""))
         return poke
+
+    async def _resolve_record_pokes(
+        self,
+        event: AstrMessageEvent,
+        group_id: str,
+        records: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        resolved = []
+        for record in records:
+            item = dict(record)
+            await self._resolve_record_poke_item(event, group_id, item)
+            for key in ("before", "after"):
+                messages = []
+                for ctx in item.get(key) or []:
+                    ctx_item = dict(ctx)
+                    await self._resolve_record_poke_item(event, group_id, ctx_item)
+                    messages.append(ctx_item)
+                if messages:
+                    item[key] = messages
+            resolved.append(item)
+        return resolved
+
+    async def _resolve_record_poke_item(
+        self,
+        event: AstrMessageEvent,
+        group_id: str,
+        record: dict[str, Any],
+    ) -> None:
+        poke = record.get("poke")
+        if not isinstance(poke, dict):
+            return
+        poke = dict(poke)
+        target = str(poke.get("target") or "").strip()
+        if not poke.get("target_id") and self._looks_like_numeric_id(target):
+            poke["target_id"] = target
+        record["poke"] = await self._resolve_poke_message(event, group_id, poke)
 
     def _first_poke_target_id(self, data: dict[str, Any]) -> str:
         for key in (
@@ -3595,6 +3717,9 @@ class WhoAtMePlugin(Star):
 
     def _reminder_context_key(self, group_id: str) -> str:
         return f"reminder:context:{group_id}"
+
+    def _member_cache_key(self, group_id: str, user_id: str) -> str:
+        return f"member:name:{group_id}:{user_id}"
 
     def _stop_event(self, event: AstrMessageEvent) -> None:
         stopper = getattr(event, "stop_event", None)
