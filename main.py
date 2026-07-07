@@ -84,11 +84,16 @@ HTML_TEMPLATE = r"""
     html, body {
       margin: 0;
       padding: 0;
-      background: #333;
+      width: 600px;
+      min-width: 600px;
+      max-width: 600px;
+      overflow-x: hidden;
+      background: #f2f3f5;
       font-family: var(--who-at-me-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif);
     }
     .app {
       width: 600px;
+      max-width: 600px;
       min-height: 200px;
       background: #f2f3f5;
       display: flex;
@@ -1198,6 +1203,8 @@ class WhoAtMePlugin(Star):
                 options={
                     "type": "jpeg",
                     "quality": self._render_quality(),
+                    "width": 600,
+                    "viewport": {"width": 600, "height": 800},
                     "full_page": True,
                     "timeout": self._render_page_timeout_ms(),
                 },
