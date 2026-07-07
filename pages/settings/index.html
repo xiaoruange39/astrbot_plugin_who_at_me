@@ -58,17 +58,15 @@ input[type=number] {
   color:var(--text);
 }
 input[type=number]:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(30,123,255,.12) }
-input[type=checkbox] { width:16px; height:16px; accent-color:var(--blue) }
 input[type=file] { display:none }
-.check {
-  display:flex;
-  align-items:center;
-  gap:8px;
-  margin:0 0 14px;
-  color:var(--text);
-  font-size:14px;
-  font-weight:700;
+input[type=range] {
+  width:100%;
+  accent-color:var(--blue);
 }
+.range-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px }
+.range-head label { margin-bottom:0 }
+.range-value { color:var(--blue); font-weight:800; font-size:13px }
+.range-box { margin:0 0 14px }
 .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:4px }
 button {
   border:0;
@@ -97,7 +95,12 @@ button:disabled { opacity:.55; cursor:not-allowed }
 }
 .phone.font-bold, .phone.font-bold * {
   font-weight:900 !important;
-  text-shadow:0.35px 0 0 currentColor;
+  -webkit-text-stroke:var(--who-at-me-bold-stroke, 0px) currentColor;
+  text-shadow:
+    var(--who-at-me-bold-shadow-x, 0px) 0 0 currentColor,
+    var(--who-at-me-bold-shadow-x-neg, 0px) 0 0 currentColor,
+    0 var(--who-at-me-bold-shadow-y, 0px) 0 currentColor,
+    0 var(--who-at-me-bold-shadow-y-neg, 0px) 0 currentColor;
 }
 .preview-header {
   min-height:64px;
@@ -236,7 +239,13 @@ button:disabled { opacity:.55; cursor:not-allowed }
           <div><label for="groupFontSize">群名字号</label><input id="groupFontSize" type="number" min="8" max="96" step="1"></div>
           <div></div>
         </div>
-        <label class="check"><input id="fontBold" type="checkbox"> 整页字体加粗</label>
+        <div class="range-box">
+          <div class="range-head">
+            <label for="fontBoldStrength">整页字体加粗强度</label>
+            <span class="range-value" id="fontBoldStrengthValue">0</span>
+          </div>
+          <input id="fontBoldStrength" type="range" min="0" max="120" step="1">
+        </div>
         <div class="actions">
           <button class="primary" id="saveLayout">保存文字设置</button>
           <button id="resetLayout">恢复默认</button>
@@ -301,7 +310,7 @@ button:disabled { opacity:.55; cursor:not-allowed }
 const B = window.AstrBotPluginPage;
 if (B) await B.ready();
 
-const defaults = { time_x:30, time_y:7, time_font_size:16, group_x:56, group_y:45, group_font_size:22, font_bold:false };
+const defaults = { time_x:30, time_y:7, time_font_size:16, group_x:56, group_y:45, group_font_size:22, font_bold:false, font_bold_strength:0 };
 const defaultImages = { header:'', footer:'' };
 let state = { layout:{ ...defaults }, fonts:[], current_name:'', images:{ ...defaultImages } };
 
@@ -313,7 +322,7 @@ const fields = {
   group_x: $('groupX'),
   group_y: $('groupY'),
   group_font_size: $('groupFontSize'),
-  font_bold: $('fontBold')
+  font_bold_strength: $('fontBoldStrength')
 };
 
 function dataOf(resp) { return resp && resp.data ? resp.data : resp; }
@@ -326,7 +335,33 @@ function apiPost(path, payload) {
   return fetch(path, { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify(payload || {}) }).then(r => r.json());
 }
 function setMsg(id, text) { $(id).textContent = text || ''; }
+function clampNumber(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(number)));
+}
+function boldCssValues(strength) {
+  return {
+    stroke: (strength * 0.006).toFixed(3),
+    shadowX: (strength * 0.012).toFixed(3),
+    shadowXNeg: (strength * 0.006).toFixed(3),
+    shadowY: (strength * 0.008).toFixed(3),
+    shadowYNeg: (strength * 0.004).toFixed(3)
+  };
+}
+function applyBoldPreview(strength) {
+  const phone = $('previewPhone');
+  phone.classList.toggle('font-bold', strength > 0);
+  const values = boldCssValues(strength);
+  phone.style.setProperty('--who-at-me-bold-stroke', values.stroke + 'px');
+  phone.style.setProperty('--who-at-me-bold-shadow-x', values.shadowX + 'px');
+  phone.style.setProperty('--who-at-me-bold-shadow-x-neg', '-' + values.shadowXNeg + 'px');
+  phone.style.setProperty('--who-at-me-bold-shadow-y', values.shadowY + 'px');
+  phone.style.setProperty('--who-at-me-bold-shadow-y-neg', '-' + values.shadowYNeg + 'px');
+  $('fontBoldStrengthValue').textContent = String(strength);
+}
 function readLayout() {
+  const boldStrength = clampNumber(fields.font_bold_strength.value, defaults.font_bold_strength, 0, 120);
   return {
     time_x: Number(fields.time_x.value || defaults.time_x),
     time_y: Number(fields.time_y.value || defaults.time_y),
@@ -334,18 +369,22 @@ function readLayout() {
     group_x: Number(fields.group_x.value || defaults.group_x),
     group_y: Number(fields.group_y.value || defaults.group_y),
     group_font_size: Number(fields.group_font_size.value || defaults.group_font_size),
-    font_bold: Boolean(fields.font_bold.checked)
+    font_bold: boldStrength > 0,
+    font_bold_strength: boldStrength
   };
 }
 function fillLayout(layout) {
   const l = { ...defaults, ...(layout || {}) };
+  if (!(layout && Object.prototype.hasOwnProperty.call(layout, 'font_bold_strength')) && l.font_bold) {
+    l.font_bold_strength = 60;
+  }
   fields.time_x.value = l.time_x;
   fields.time_y.value = l.time_y;
   fields.time_font_size.value = l.time_font_size;
   fields.group_x.value = l.group_x;
   fields.group_y.value = l.group_y;
   fields.group_font_size.value = l.group_font_size;
-  fields.font_bold.checked = Boolean(l.font_bold);
+  fields.font_bold_strength.value = clampNumber(l.font_bold_strength, l.font_bold ? 60 : defaults.font_bold_strength, 0, 120);
   updatePreview();
 }
 function updatePreview() {
@@ -356,7 +395,7 @@ function updatePreview() {
   $('previewGroup').style.left = l.group_x + 'px';
   $('previewGroup').style.top = l.group_y + 'px';
   $('previewGroup').style.fontSize = l.group_font_size + 'px';
-  $('previewPhone').classList.toggle('font-bold', Boolean(l.font_bold));
+  applyBoldPreview(l.font_bold_strength);
 }
 function updatePreviewFont() {
   $('previewFontStyle').textContent = state.current_font_css || '';

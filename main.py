@@ -67,6 +67,7 @@ PAGE_SETTINGS_DEFAULTS = {
     "group_y": 45,
     "group_font_size": 22,
     "font_bold": False,
+    "font_bold_strength": 0,
     "font_path": "",
     "header_image_path": "",
     "footer_image_path": "",
@@ -96,7 +97,12 @@ HTML_TEMPLATE = r"""
     }
     .app.font-bold, .app.font-bold * {
       font-weight: 900 !important;
-      text-shadow: 0.35px 0 0 currentColor;
+      -webkit-text-stroke: var(--who-at-me-bold-stroke, 0px) currentColor;
+      text-shadow:
+        var(--who-at-me-bold-shadow-x, 0px) 0 0 currentColor,
+        var(--who-at-me-bold-shadow-x-neg, 0px) 0 0 currentColor,
+        0 var(--who-at-me-bold-shadow-y, 0px) 0 currentColor,
+        0 var(--who-at-me-bold-shadow-y-neg, 0px) 0 currentColor;
     }
     .header-wrapper {
       min-height: 64px;
@@ -349,7 +355,10 @@ HTML_TEMPLATE = r"""
   </style>
 </head>
 <body>
-  <div class="app{% if layout.font_bold %} font-bold{% endif %}">
+  <div
+    class="app{% if layout.font_bold_strength %} font-bold{% endif %}"
+    style="--who-at-me-bold-stroke: {{ layout.font_bold_stroke }}px; --who-at-me-bold-shadow-x: {{ layout.font_bold_shadow_x }}px; --who-at-me-bold-shadow-x-neg: -{{ layout.font_bold_shadow_x_neg }}px; --who-at-me-bold-shadow-y: {{ layout.font_bold_shadow_y }}px; --who-at-me-bold-shadow-y-neg: -{{ layout.font_bold_shadow_y_neg }}px;"
+  >
     <div class="header-wrapper">
       <img src="{{ header_image }}" />
       <div class="status-time">{{ now }}</div>
@@ -2710,6 +2719,9 @@ class WhoAtMePlugin(Star):
 
     def _sanitize_layout_settings(self, value: Any) -> dict[str, Any]:
         data = value if isinstance(value, dict) else {}
+        bold_strength = self._clamp_int(data.get("font_bold_strength"), PAGE_SETTINGS_DEFAULTS["font_bold_strength"], 0, 120)
+        if "font_bold_strength" not in data and self._bool_setting(data.get("font_bold"), PAGE_SETTINGS_DEFAULTS["font_bold"]):
+            bold_strength = 60
         return {
             "time_x": self._clamp_int(data.get("time_x"), PAGE_SETTINGS_DEFAULTS["time_x"], 0, 600),
             "time_y": self._clamp_int(data.get("time_y"), PAGE_SETTINGS_DEFAULTS["time_y"], 0, 120),
@@ -2721,7 +2733,13 @@ class WhoAtMePlugin(Star):
             "group_font_size": self._clamp_int(
                 data.get("group_font_size"), PAGE_SETTINGS_DEFAULTS["group_font_size"], 8, 96
             ),
-            "font_bold": self._bool_setting(data.get("font_bold"), PAGE_SETTINGS_DEFAULTS["font_bold"]),
+            "font_bold": bold_strength > 0,
+            "font_bold_strength": bold_strength,
+            "font_bold_stroke": self._bold_css_value(bold_strength, 0.006),
+            "font_bold_shadow_x": self._bold_css_value(bold_strength, 0.012),
+            "font_bold_shadow_x_neg": self._bold_css_value(bold_strength, 0.006),
+            "font_bold_shadow_y": self._bold_css_value(bold_strength, 0.008),
+            "font_bold_shadow_y_neg": self._bold_css_value(bold_strength, 0.004),
         }
 
     def _render_layout(self) -> dict[str, Any]:
@@ -2733,6 +2751,9 @@ class WhoAtMePlugin(Star):
         except (TypeError, ValueError):
             number = int(default)
         return min(maximum, max(minimum, number))
+
+    def _bold_css_value(self, strength: int, scale: float) -> str:
+        return f"{float(strength) * scale:.3f}".rstrip("0").rstrip(".")
 
     def _bool_setting(self, value: Any, default: bool = False) -> bool:
         if isinstance(value, bool):
