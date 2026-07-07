@@ -1,0 +1,392 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=600, initial-scale=1.0" />
+  <style>
+    {{ custom_font_css | safe }}
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 600px;
+      min-width: 600px;
+      max-width: 600px;
+      overflow-x: hidden;
+      background: #f2f3f5;
+      font-family: var(--who-at-me-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif);
+    }
+    .app {
+      width: 600px;
+      max-width: 600px;
+      min-height: 200px;
+      background: #f2f3f5;
+      display: flex;
+      flex-direction: column;
+      color: #000;
+    }
+    .app.font-bold, .app.font-bold * {
+      font-weight: 900 !important;
+      -webkit-text-stroke: var(--who-at-me-bold-stroke, 0px) currentColor;
+      text-shadow:
+        var(--who-at-me-bold-shadow-x, 0px) 0 0 currentColor,
+        var(--who-at-me-bold-shadow-x-neg, 0px) 0 0 currentColor,
+        0 var(--who-at-me-bold-shadow-y, 0px) 0 currentColor,
+        0 var(--who-at-me-bold-shadow-y-neg, 0px) 0 currentColor;
+    }
+    .header-wrapper {
+      min-height: 64px;
+      background: #fdfdfd;
+      position: relative;
+      flex: 0 0 auto;
+    }
+    .header-wrapper img {
+      display: block;
+      width: 100%;
+      min-height: 64px;
+      object-fit: cover;
+    }
+    .status-time {
+      position: absolute;
+      top: {{ layout.time_y }}px;
+      left: {{ layout.time_x }}px;
+      font-size: {{ layout.time_font_size }}px;
+      font-weight: 700;
+      color: #111;
+    }
+    .header-text {
+      position: absolute;
+      left: {{ layout.group_x }}px;
+      right: 56px;
+      top: {{ layout.group_y }}px;
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      font-size: {{ layout.group_font_size }}px;
+      line-height: 1.2;
+      font-weight: 800;
+      color: #000;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .chat-area {
+      padding: 18px 16px 22px 16px;
+      flex: 1;
+    }
+    .msg-item {
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 24px;
+    }
+    .msg-body {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+    .avatar, .avatar-fallback {
+      width: 50px;
+      height: 50px;
+      flex: 0 0 50px;
+      border-radius: 50%;
+      border: 1px solid #e5e7eb;
+      object-fit: cover;
+      background: linear-gradient(135deg, #1f8fff, #28c2d1);
+    }
+    .avatar-fallback {
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      font-weight: 800;
+    }
+    .msg-content {
+      flex: 1;
+      min-width: 0;
+    }
+    .msg-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      margin: 0 0 6px 2px;
+      color: #888;
+      font-size: 13px;
+    }
+    .tag-pill {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      border-radius: 4px;
+      padding: 3px 6px;
+      color: #fff;
+      font-size: 11px;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+    .nickname {
+      min-width: 0;
+      color: #666;
+      font-size: 14px;
+      font-weight: 700;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .msg-bubble {
+      display: inline-block;
+      max-width: 85%;
+      padding: 12px 16px;
+      border-radius: 4px 16px 16px 16px;
+      background: #fff;
+      border: 1px solid transparent;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .msg-bubble.is-at {
+      background: #eef5ff;
+      border-color: #cce0ff;
+    }
+    .msg-text {
+      color: #000;
+      font-size: 18px;
+      line-height: 1.4;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .at-text {
+      color: #1e6fff;
+      margin-right: 6px;
+      font-style: normal;
+    }
+    .msg-img {
+      display: block;
+      max-width: 100%;
+      max-height: 360px;
+      margin-top: 8px;
+      border-radius: 8px;
+      border: 1px solid #eee;
+      object-fit: contain;
+    }
+    .quote-card {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 9px;
+      padding: 8px 10px;
+      background: rgba(255,255,255,0.72);
+      border-radius: 8px;
+      border: 1px solid rgba(0,0,0,0.06);
+      max-width: 100%;
+    }
+    .quote-card::before {
+      content: "";
+      flex: 0 0 3px;
+      align-self: stretch;
+      border-radius: 3px;
+      background: #b8bcc3;
+    }
+    .quote-body {
+      min-width: 0;
+      flex: 1;
+    }
+    .quote-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 5px;
+      color: #555;
+      font-size: 13px;
+      line-height: 1.25;
+      font-weight: 700;
+    }
+    .quote-name {
+      max-width: 160px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .member-title {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      border-radius: 4px;
+      padding: 2px 5px;
+      background: #e1e1e1;
+      color: #777;
+      font-size: 11px;
+      line-height: 1;
+      font-weight: 700;
+    }
+    .quote-time {
+      color: #999;
+      font-weight: 600;
+    }
+    .quote-text {
+      color: #333;
+      font-size: 14px;
+      line-height: 1.35;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .quote-images {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .quote-img {
+      display: block;
+      max-width: 112px;
+      max-height: 112px;
+      border-radius: 6px;
+      border: 1px solid #e5e7eb;
+      object-fit: cover;
+    }
+    .msg-time-bottom {
+      margin: 6px 0 0 4px;
+      color: #b0b0b0;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .poke-row {
+      display: flex;
+      justify-content: center;
+      margin: 2px 0 22px 0;
+    }
+    .poke-pill {
+      display: inline-flex;
+      align-items: center;
+      max-width: 82%;
+      padding: 4px 10px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.86);
+      color: #999;
+      font-size: 13px;
+      line-height: 1.35;
+      font-weight: 700;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+      overflow-wrap: anywhere;
+    }
+    .poke-name {
+      color: #1e6fff;
+      font-weight: 800;
+    }
+    .block-divider {
+      display: flex;
+      align-items: center;
+      color: #0f9fff;
+      font-size: 12px;
+      margin: 14px 0 25px 0;
+      font-weight: 500;
+    }
+    .block-divider::before, .block-divider::after {
+      content: "";
+      flex: 1;
+      border-bottom: 1px solid #0f9fff;
+    }
+    .block-divider::before { margin-right: 15px; }
+    .block-divider::after { margin-left: 15px; }
+    .footer-wrapper {
+      margin-top: auto;
+      padding: 0;
+      color: #999;
+      text-align: center;
+      font-size: 14px;
+      min-height: 44px;
+    }
+    .footer-wrapper img {
+      display: block;
+      width: 100%;
+      min-height: 44px;
+      object-fit: cover;
+    }
+    .page-indicator {
+      padding-bottom: 10px;
+      color: #999;
+    }
+  </style>
+</head>
+<body>
+  <div
+    class="app{% if layout.font_bold_strength %} font-bold{% endif %}"
+    style="--who-at-me-bold-stroke: {{ layout.font_bold_stroke }}px; --who-at-me-bold-shadow-x: {{ layout.font_bold_shadow_x }}px; --who-at-me-bold-shadow-x-neg: -{{ layout.font_bold_shadow_x_neg }}px; --who-at-me-bold-shadow-y: {{ layout.font_bold_shadow_y }}px; --who-at-me-bold-shadow-y-neg: -{{ layout.font_bold_shadow_y_neg }}px;"
+  >
+    <div class="header-wrapper">
+      <img src="{{ header_image }}" />
+      <div class="status-time">{{ now }}</div>
+      <div class="header-text">{{ group_name }}{% if member_count %}({{ member_count }}){% endif %} 👂</div>
+    </div>
+    <div class="chat-area">
+      {% for block in blocks %}
+        <div class="msg-block">
+          {% for msg in block.msgs %}
+            <div class="msg-item">
+              {% if msg.is_poke %}
+                <div class="poke-row">
+                  <div class="poke-pill">
+                    <span class="poke-name">{{ msg.poke_actor }}</span>
+                    <span>&nbsp;{{ msg.poke_action }}&nbsp;</span>
+                    <span class="poke-name">{{ msg.poke_target }}</span>
+                    {% if msg.poke_suffix %}<span>{{ msg.poke_suffix }}</span>{% endif %}
+                  </div>
+                </div>
+              {% else %}
+                <div class="msg-body">
+                  {% if msg.avatar %}
+                    <img src="{{ msg.avatar }}" class="avatar" />
+                  {% else %}
+                    <div class="avatar-fallback">{{ msg.initial }}</div>
+                  {% endif %}
+                  <div class="msg-content">
+                    <div class="msg-info">
+                      {% if msg.tag_text %}<span class="tag-pill" style="background: {{ msg.tag_color }}">{{ msg.tag_text }}</span>{% endif %}
+                      <span class="nickname">{{ msg.nickname }}</span>
+                    </div>
+                    <div class="msg-bubble {% if msg.is_at %}is-at{% endif %}">
+                      {% if msg.quote %}
+                        <div class="quote-card">
+                          <div class="quote-body">
+                            <div class="quote-head">
+                              <span class="quote-name">{{ msg.quote.nickname }}</span>
+                              {% if msg.quote.time_text %}<span class="quote-time">{{ msg.quote.time_text }}</span>{% endif %}
+                            </div>
+                            {% if msg.quote.message_html %}
+                              <div class="quote-text">{{ msg.quote.message_html | safe }}</div>
+                            {% endif %}
+                            {% if msg.quote.images %}
+                              <div class="quote-images">
+                                {% for image in msg.quote.images %}
+                                  <img src="{{ image }}" class="quote-img" onerror="this.remove()" />
+                                {% endfor %}
+                              </div>
+                            {% endif %}
+                          </div>
+                        </div>
+                      {% endif %}
+                      {% if msg.is_at or msg.has_message %}
+                        <div class="msg-text">
+                          {% if msg.is_at %}<span class="at-text">@{{ target_name }}</span>{% endif %}
+                          {% if msg.has_message %}{{ msg.message_html | safe }}{% endif %}
+                        </div>
+                      {% endif %}
+                      {% for image in msg.images %}
+                        <img src="{{ image }}" class="msg-img" onerror="this.remove()" />
+                      {% endfor %}
+                    </div>
+                    <div class="msg-time-bottom">{{ msg.time_text }}</div>
+                  </div>
+                </div>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+        {% if not loop.last %}<div class="block-divider">新消息</div>{% endif %}
+      {% endfor %}
+    </div>
+    <div class="footer-wrapper">
+      {% if page_label %}<div class="page-indicator">- {{ page_label }} -</div>{% endif %}
+      <img src="{{ footer_image }}" />
+    </div>
+  </div>
+</body>
+</html>
