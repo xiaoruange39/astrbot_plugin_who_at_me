@@ -11,6 +11,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
+from urllib.request import urlopen
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -1049,7 +1051,7 @@ class WhoAtMePlugin(Star):
             ),
             target_name=target_name,
             count=len(pending),
-        )
+        ).strip()
         blocks = self._build_blocks(pending, target_name, reverse=False)
         chunks = self._chunk_blocks(blocks)
         chunks = self._limit_chunks(chunks, self._max_reminder_pages())
@@ -1072,14 +1074,19 @@ class WhoAtMePlugin(Star):
                 )
                 image_paths.append(image_path)
 
-            if not await self._try_send_text_images(event, reminder_text, image_paths):
-                await self._try_send(event, event.plain_result(reminder_text))
+            if reminder_text:
+                if not await self._try_send_text_images(event, reminder_text, image_paths):
+                    await self._try_send(event, event.plain_result(reminder_text))
+                    for image_path in image_paths:
+                        if not await self._try_send(event, event.image_result(image_path)):
+                            raise RuntimeError(f"发送提醒图片失败: {image_path}")
+            elif not await self._try_send_images(event, image_paths):
                 for image_path in image_paths:
                     if not await self._try_send(event, event.image_result(image_path)):
                         raise RuntimeError(f"发送提醒图片失败: {image_path}")
         except Exception as exc:
             logger.error(f"[谁艾特我] 渲染或发送提醒失败: {exc}")
-            if not image_paths:
+            if reminder_text and not image_paths:
                 await self._try_send(event, event.plain_result(reminder_text))
             await self._try_send(event, event.plain_result(self._plain_summary(pending, target_name)))
 
@@ -1113,16 +1120,17 @@ class WhoAtMePlugin(Star):
         is_self_query = target == self._sender_id(event)
         target_pronoun = "你" if is_self_query else "ta"
         waiting_template = self._config_str("message", "waiting_text_template", default="让{bot_name}看看谁艾特过你哦，稍等一下~")
-        if not is_self_query and waiting_template == "让{bot_name}看看谁艾特过你哦，稍等一下~":
-            waiting_template = "让{bot_name}看看谁艾特过ta哦，稍等一下~"
-        waiting_text = self._format_template(
-            waiting_template,
-            bot_name=await self._bot_name(event, group_id),
-            target_name=target_name,
-            target_pronoun=target_pronoun,
-        )
-        if not await self._try_send(event, event.plain_result(waiting_text)):
-            return [event.plain_result(waiting_text)]
+        if waiting_template.strip():
+            if not is_self_query and waiting_template == "让{bot_name}看看谁艾特过你哦，稍等一下~":
+                waiting_template = "让{bot_name}看看谁艾特过ta哦，稍等一下~"
+            waiting_text = self._format_template(
+                waiting_template,
+                bot_name=await self._bot_name(event, group_id),
+                target_name=target_name,
+                target_pronoun=target_pronoun,
+            ).strip()
+            if waiting_text and not await self._try_send(event, event.plain_result(waiting_text)):
+                return [event.plain_result(waiting_text)]
 
         image_paths: list[str] = []
         try:
@@ -1196,7 +1204,7 @@ class WhoAtMePlugin(Star):
                     f"[谁艾特我] 浏览器直渲失败，回退到 AstrBot html_render: {type(exc).__name__}: {exc}",
                     exc_info=True,
                 )
-        return await asyncio.wait_for(
+        rendered = await asyncio.wait_for(
             self.html_render(
                 HTML_TEMPLATE,
                 data,
@@ -1211,6 +1219,7 @@ class WhoAtMePlugin(Star):
             ),
             timeout=timeout,
         )
+        return self._crop_html_render_image(rendered)
 
     async def _try_send(self, event: AstrMessageEvent, result: Any) -> bool:
         try:
@@ -1415,6 +1424,97 @@ class WhoAtMePlugin(Star):
             await page.wait_for_timeout(300)
         except Exception as exc:
             logger.debug(f"[谁艾特我] 等待浏览器资源加载失败，继续截图: {type(exc).__name__}: {exc}")
+
+    def _crop_html_render_image(self, image_ref: str) -> str:
+        path = self._local_image_ref_path(image_ref)
+        if not path:
+            return image_ref
+        try:
+            from PIL import Image
+        except Exception as exc:
+            logger.debug(f"[谁艾特我] Pillow 不可用，跳过 t2i 裁剪: {type(exc).__name__}: {exc}")
+            return image_ref
+
+        try:
+            with Image.open(path) as image:
+                crop_width = self._detect_render_content_width(image)
+                if image.width <= crop_width + 4:
+                    return image_ref
+
+                output = self._new_render_path()
+                frame = image.convert("RGB").crop((0, 0, crop_width, image.height))
+                frame.save(output, format="JPEG", quality=self._render_quality())
+                logger.debug(f"[谁艾特我] 已裁剪 t2i 图片宽度: {image.width} -> {crop_width}")
+                return str(output)
+        except Exception as exc:
+            logger.warning(f"[谁艾特我] 裁剪 t2i 图片失败，使用原图: {type(exc).__name__}: {exc}")
+            return image_ref
+
+    def _local_image_ref_path(self, image_ref: str) -> Path | None:
+        text = str(image_ref or "").strip()
+        if not text or text.startswith("base64://"):
+            return None
+        if re.match(r"^https?://", text, re.I):
+            return self._download_render_image(text)
+        if text.lower().startswith("file:"):
+            parsed = urlparse(text)
+            path_text = unquote(parsed.path or "")
+            if re.match(r"^/[A-Za-z]:", path_text):
+                path_text = path_text[1:]
+            path = Path(path_text)
+        else:
+            path = Path(text)
+        try:
+            return path if path.is_file() else None
+        except OSError:
+            return None
+
+    def _download_render_image(self, url: str) -> Path | None:
+        try:
+            output = self._new_render_path()
+            with urlopen(url, timeout=max(3, self._render_task_timeout_sec())) as response:
+                output.write_bytes(response.read())
+            return output if output.is_file() else None
+        except Exception as exc:
+            logger.debug(f"[谁艾特我] 下载 t2i 图片用于裁剪失败: {type(exc).__name__}: {exc}")
+            return None
+
+    def _detect_render_content_width(self, image: Any) -> int:
+        width, height = image.size
+        if width <= 640:
+            return width
+
+        rgb = image.convert("RGB")
+        bg = self._right_edge_average_color(rgb)
+        sample_ys = set(range(0, min(height, 170), 5))
+        sample_ys.update(range(max(0, height - 130), height, 5))
+        sample_ys.update(range(0, height, 40))
+
+        rightmost = 0
+        for x in range(width - 1, -1, -1):
+            if any(self._color_distance(rgb.getpixel((x, y)), bg) > 18 for y in sample_ys):
+                rightmost = x
+                break
+
+        detected = min(width, max(1, rightmost + 4))
+        if 520 <= detected <= 680:
+            return 600
+        if detected < 420 and width > 700:
+            return 600
+        return detected
+
+    def _right_edge_average_color(self, image: Any) -> tuple[int, int, int]:
+        width, height = image.size
+        pixels = []
+        for x in range(max(0, width - 8), width):
+            for y in range(0, height, max(1, height // 80)):
+                pixels.append(image.getpixel((x, y)))
+        if not pixels:
+            return (242, 243, 245)
+        return tuple(int(sum(pixel[idx] for pixel in pixels) / len(pixels)) for idx in range(3))
+
+    def _color_distance(self, left: tuple[int, int, int], right: tuple[int, int, int]) -> int:
+        return max(abs(int(left[idx]) - int(right[idx])) for idx in range(3))
 
     def _new_render_path(self) -> Path:
         render_dir = self._render_dir()
