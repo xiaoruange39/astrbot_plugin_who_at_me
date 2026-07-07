@@ -58,7 +58,17 @@ input[type=number] {
   color:var(--text);
 }
 input[type=number]:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(30,123,255,.12) }
+input[type=checkbox] { width:16px; height:16px; accent-color:var(--blue) }
 input[type=file] { display:none }
+.check {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin:0 0 14px;
+  color:var(--text);
+  font-size:14px;
+  font-weight:700;
+}
 .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:4px }
 button {
   border:0;
@@ -85,6 +95,7 @@ button:disabled { opacity:.55; cursor:not-allowed }
   border:1px solid #dfe4ea;
   transform-origin:top left;
 }
+.phone.font-bold, .phone.font-bold * { font-weight:800 !important }
 .preview-header {
   min-height:64px;
   background:#fdfdfd;
@@ -222,6 +233,7 @@ button:disabled { opacity:.55; cursor:not-allowed }
           <div><label for="groupFontSize">群名字号</label><input id="groupFontSize" type="number" min="8" max="96" step="1"></div>
           <div></div>
         </div>
+        <label class="check"><input id="fontBold" type="checkbox"> 整页字体加粗</label>
         <div class="actions">
           <button class="primary" id="saveLayout">保存文字设置</button>
           <button id="resetLayout">恢复默认</button>
@@ -258,7 +270,7 @@ button:disabled { opacity:.55; cursor:not-allowed }
     <div class="card">
       <h2>预览</h2>
       <div class="preview-wrap">
-        <div class="phone">
+        <div class="phone" id="previewPhone">
           <div class="preview-header">
             <img id="previewHeaderImage" class="preview-header-img" alt="">
             <div class="preview-time" id="previewTime">21:30</div>
@@ -286,7 +298,7 @@ button:disabled { opacity:.55; cursor:not-allowed }
 const B = window.AstrBotPluginPage;
 if (B) await B.ready();
 
-const defaults = { time_x:30, time_y:7, time_font_size:16, group_x:56, group_y:45, group_font_size:22 };
+const defaults = { time_x:30, time_y:7, time_font_size:16, group_x:56, group_y:45, group_font_size:22, font_bold:false };
 const defaultImages = { header:'', footer:'' };
 let state = { layout:{ ...defaults }, fonts:[], current_name:'', images:{ ...defaultImages } };
 
@@ -297,7 +309,8 @@ const fields = {
   time_font_size: $('timeFontSize'),
   group_x: $('groupX'),
   group_y: $('groupY'),
-  group_font_size: $('groupFontSize')
+  group_font_size: $('groupFontSize'),
+  font_bold: $('fontBold')
 };
 
 function dataOf(resp) { return resp && resp.data ? resp.data : resp; }
@@ -317,7 +330,8 @@ function readLayout() {
     time_font_size: Number(fields.time_font_size.value || defaults.time_font_size),
     group_x: Number(fields.group_x.value || defaults.group_x),
     group_y: Number(fields.group_y.value || defaults.group_y),
-    group_font_size: Number(fields.group_font_size.value || defaults.group_font_size)
+    group_font_size: Number(fields.group_font_size.value || defaults.group_font_size),
+    font_bold: Boolean(fields.font_bold.checked)
   };
 }
 function fillLayout(layout) {
@@ -328,6 +342,7 @@ function fillLayout(layout) {
   fields.group_x.value = l.group_x;
   fields.group_y.value = l.group_y;
   fields.group_font_size.value = l.group_font_size;
+  fields.font_bold.checked = Boolean(l.font_bold);
   updatePreview();
 }
 function updatePreview() {
@@ -338,6 +353,7 @@ function updatePreview() {
   $('previewGroup').style.left = l.group_x + 'px';
   $('previewGroup').style.top = l.group_y + 'px';
   $('previewGroup').style.fontSize = l.group_font_size + 'px';
+  $('previewPhone').classList.toggle('font-bold', Boolean(l.font_bold));
 }
 function updatePreviewFont() {
   $('previewFontStyle').textContent = state.current_font_css || '';
@@ -459,7 +475,10 @@ async function resetImage(kind) {
   await loadAll();
 }
 
-Object.values(fields).forEach(input => input.addEventListener('input', updatePreview));
+Object.values(fields).forEach(input => {
+  input.addEventListener('input', updatePreview);
+  input.addEventListener('change', updatePreview);
+});
 $('saveLayout').onclick = () => saveLayout(readLayout());
 $('resetLayout').onclick = () => saveLayout(defaults);
 $('reloadBtn').onclick = loadAll;

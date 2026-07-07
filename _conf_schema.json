@@ -70,6 +70,18 @@
         "default": true,
         "hint": "用户可用 #关闭我的艾特提醒 关闭。"
       },
+      "user_whitelist": {
+        "description": "允许接收提醒的用户 QQ 白名单",
+        "type": "list",
+        "default": [],
+        "hint": "留空则不限制用户；填入后只有这些 QQ 号会进入被动艾特提醒队列。只影响提醒，不影响手动查询。"
+      },
+      "user_blacklist": {
+        "description": "禁止接收提醒的用户 QQ 黑名单",
+        "type": "list",
+        "default": [],
+        "hint": "填入后这些 QQ 号不会进入被动艾特提醒队列，也不会收到已排队的提醒。黑名单优先于白名单。只影响提醒，不影响手动查询。"
+      },
       "away_minutes": {
         "description": "离开判定分钟数",
         "type": "int",

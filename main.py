@@ -66,6 +66,7 @@ PAGE_SETTINGS_DEFAULTS = {
     "group_x": 56,
     "group_y": 45,
     "group_font_size": 22,
+    "font_bold": False,
     "font_path": "",
     "header_image_path": "",
     "footer_image_path": "",
@@ -92,6 +93,9 @@ HTML_TEMPLATE = r"""
       display: flex;
       flex-direction: column;
       color: #000;
+    }
+    .app.font-bold, .app.font-bold * {
+      font-weight: 800 !important;
     }
     .header-wrapper {
       min-height: 64px;
@@ -344,7 +348,7 @@ HTML_TEMPLATE = r"""
   </style>
 </head>
 <body>
-  <div class="app">
+  <div class="app{% if layout.font_bold %} font-bold{% endif %}">
     <div class="header-wrapper">
       <img src="{{ header_image }}" />
       <div class="status-time">{{ now }}</div>
@@ -979,16 +983,6 @@ class WhoAtMePlugin(Star):
         if not await self._reminder_user_enabled(group_id, target):
             return False
 
-        record_time = int(record.get("time", time.time()))
-        last_active = await self.get_kv_data(self._reminder_last_active_key(group_id, target), None)
-        try:
-            last_active_time = int(last_active)
-        except (TypeError, ValueError):
-            last_active_time = self.started_at
-
-        if record_time - min(last_active_time, record_time) < self._reminder_away_seconds():
-            return False
-
         pending_record = dict(record)
         pending_record["target"] = target
         if context_config.get("enabled"):
@@ -1008,6 +1002,9 @@ class WhoAtMePlugin(Star):
 
     async def _deliver_pending_reminders(self, event: AstrMessageEvent, group_id: str, user_id: str) -> None:
         if not await self._reminder_group_enabled(event, group_id):
+            return
+        if not await self._reminder_user_enabled(group_id, user_id):
+            await self.delete_kv_data(self._reminder_pending_key(group_id, user_id))
             return
 
         pending = await self._get_pending_reminders(group_id, user_id)
@@ -1557,6 +1554,8 @@ class WhoAtMePlugin(Star):
         await self.put_kv_data(self._reminder_group_key(group_id), bool(enabled))
 
     async def _reminder_user_enabled(self, group_id: str, user_id: str) -> bool:
+        if not self._reminder_user_allowed(user_id):
+            return False
         value = await self.get_kv_data(self._reminder_user_key(group_id, user_id), None)
         return self._config_bool("reminder", "default_user_enabled", default=True) if value is None else bool(value)
 
@@ -1603,12 +1602,14 @@ class WhoAtMePlugin(Star):
         enabled_umos = self._reminder_enabled_group_umos()
         global_status = "未配置名单" if not global_umos else ("已命中" if current_umo in global_umos else "未命中")
         umo_status = "未配置名单" if not enabled_umos else ("已命中" if current_umo in enabled_umos else "未命中")
+        user_rule_status = self._reminder_user_rule_status(sender_id)
         return (
             "艾特提醒状态：\n"
             f"本群提醒：{group_status}\n"
             f"当前 UMO：{current_umo or '未知'}\n"
             f"全局白名单：{global_status}\n"
             f"UMO 名单：{umo_status}\n"
+            f"用户名单：{user_rule_status}\n"
             f"你的提醒：{user_status}\n"
             f"提醒上下文：{context_status}（前 {context_config.get('before', 0)} / 后 {context_config.get('after', 0)}）\n"
             f"离开判定：{self._reminder_away_seconds() // 60} 分钟未发言\n"
@@ -1669,7 +1670,7 @@ class WhoAtMePlugin(Star):
             )
 
         blocks.sort(key=lambda item: item["at_time"], reverse=reverse)
-        return blocks
+        return self._dedupe_block_context(blocks)
 
     def _view_message(self, data: dict[str, Any], is_at: bool, target_name: str) -> dict[str, Any]:
         nickname = str(data.get("name") or data.get("user_id") or data.get("User") or "用户")
@@ -1734,18 +1735,44 @@ class WhoAtMePlugin(Star):
     def _dedupe_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen: dict[tuple[Any, ...], dict[str, Any]] = {}
         for msg in messages:
-            key = (
-                msg.get("user_id"),
-                msg.get("time"),
-                msg.get("message"),
-                tuple(msg.get("images") or []),
-                self._record_quote_key(msg),
-            )
+            key = self._message_key(msg)
             if key not in seen or msg.get("is_at"):
                 seen[key] = msg
         result = list(seen.values())
         result.sort(key=lambda item: item.get("sort_time", 0))
         return result
+
+    def _dedupe_block_context(self, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        at_keys = {
+            self._message_key(msg)
+            for block in blocks
+            for msg in block.get("msgs", [])
+            if msg.get("is_at")
+        }
+        seen_context: set[tuple[Any, ...]] = set()
+        for block in blocks:
+            messages = []
+            for msg in block.get("msgs", []):
+                if msg.get("is_at"):
+                    messages.append(msg)
+                    continue
+
+                key = self._message_key(msg)
+                if key in at_keys or key in seen_context:
+                    continue
+                seen_context.add(key)
+                messages.append(msg)
+            block["msgs"] = messages
+        return blocks
+
+    def _message_key(self, msg: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            str(msg.get("user_id") or ""),
+            self._record_time(msg),
+            self._record_message_key(msg),
+            self._record_images_key(msg),
+            self._record_quote_key(msg),
+        )
 
     def _chunk_blocks(self, blocks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
         chunks: list[list[dict[str, Any]]] = []
@@ -2680,7 +2707,7 @@ class WhoAtMePlugin(Star):
             encoding="utf-8",
         )
 
-    def _sanitize_layout_settings(self, value: Any) -> dict[str, int]:
+    def _sanitize_layout_settings(self, value: Any) -> dict[str, Any]:
         data = value if isinstance(value, dict) else {}
         return {
             "time_x": self._clamp_int(data.get("time_x"), PAGE_SETTINGS_DEFAULTS["time_x"], 0, 600),
@@ -2693,9 +2720,10 @@ class WhoAtMePlugin(Star):
             "group_font_size": self._clamp_int(
                 data.get("group_font_size"), PAGE_SETTINGS_DEFAULTS["group_font_size"], 8, 96
             ),
+            "font_bold": self._bool_setting(data.get("font_bold"), PAGE_SETTINGS_DEFAULTS["font_bold"]),
         }
 
-    def _render_layout(self) -> dict[str, int]:
+    def _render_layout(self) -> dict[str, Any]:
         return self._sanitize_layout_settings(self.page_settings)
 
     def _clamp_int(self, value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -2704,6 +2732,19 @@ class WhoAtMePlugin(Star):
         except (TypeError, ValueError):
             number = int(default)
         return min(maximum, max(minimum, number))
+
+    def _bool_setting(self, value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"1", "true", "yes", "on", "y"}:
+                return True
+            if text in {"0", "false", "no", "off", "n", ""}:
+                return False
+        return bool(default)
 
     def _is_same_origin_request(self, request: Any) -> bool:
         host = request.headers.get("Host", "") if request else ""
@@ -3024,6 +3065,33 @@ class WhoAtMePlugin(Star):
 
     def _reminder_enabled_group_umos(self) -> set[str]:
         return set(self._config_list("reminder", "enabled_group_umos"))
+
+    def _reminder_user_whitelist(self) -> set[str]:
+        return set(self._config_list("reminder", "user_whitelist"))
+
+    def _reminder_user_blacklist(self) -> set[str]:
+        return set(self._config_list("reminder", "user_blacklist"))
+
+    def _reminder_user_allowed(self, user_id: str) -> bool:
+        user_id = str(user_id or "").strip()
+        if not user_id:
+            return False
+        if user_id in self._reminder_user_blacklist():
+            return False
+        whitelist = self._reminder_user_whitelist()
+        return not whitelist or user_id in whitelist
+
+    def _reminder_user_rule_status(self, user_id: str) -> str:
+        user_id = str(user_id or "").strip()
+        whitelist = self._reminder_user_whitelist()
+        blacklist = self._reminder_user_blacklist()
+        if user_id and user_id in blacklist:
+            return "黑名单命中"
+        if whitelist:
+            return "白名单命中" if user_id in whitelist else "白名单未命中"
+        if blacklist:
+            return "黑名单未命中"
+        return "未配置名单"
 
     def _event_umo(self, event: AstrMessageEvent) -> str:
         return str(getattr(event, "unified_msg_origin", "") or "")
