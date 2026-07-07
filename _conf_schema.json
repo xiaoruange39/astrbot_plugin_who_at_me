@@ -31,7 +31,7 @@
         "description": "单次查询最多发送图片页数",
         "type": "int",
         "default": 0,
-        "hint": "0 表示不限制；大于 0 时只发送前 N 页。"
+        "hint": "0 表示不限制；大于 0 时只发送最新 N 页，再按排序方式展示。"
       },
       "query_context_max_messages": {
         "description": "查询上下文最多缓存消息条数",

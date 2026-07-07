@@ -1141,9 +1141,10 @@ class WhoAtMePlugin(Star):
         if not records:
             return [event.plain_result("目前还没有人艾特")]
 
-        query_reverse = self._query_reverse_order()
-        records.sort(key=lambda item: item.get("time", 0), reverse=query_reverse)
         target_name = await self._target_name(event, group_id, target)
+        total_records = len(records)
+        query_reverse = self._query_reverse_order()
+        records = self._select_query_records(records, target_name, reverse=query_reverse)
         blocks = self._build_blocks(records, target_name, reverse=query_reverse)
         chunks = self._chunk_blocks(blocks)
         chunks = self._limit_chunks(chunks, self._max_query_pages())
@@ -1174,7 +1175,7 @@ class WhoAtMePlugin(Star):
                         "group_name": await self._group_name(event, group_id),
                         "member_count": await self._member_count(event, group_id),
                         "target_name": target_name,
-                        "total_records": len(records),
+                        "total_records": total_records,
                         "context_enabled": any(item.get("is_context") for item in records),
                         "now": datetime.now().strftime("%H:%M"),
                         "page_label": f"第 {idx} / {len(chunks)} 页" if len(chunks) > 1 else "",
@@ -1585,7 +1586,9 @@ class WhoAtMePlugin(Star):
 
     async def _get_records(self, group_id: str, target: str) -> list[dict[str, Any]]:
         records = await self.get_kv_data(self._record_key(group_id, target), [])
-        return records if isinstance(records, list) else []
+        if not isinstance(records, list):
+            return []
+        return records[-self._max_records_per_target():]
 
     async def _get_pending_reminders(self, group_id: str, target: str) -> list[dict[str, Any]]:
         pending = await self.get_kv_data(self._reminder_pending_key(group_id, target), [])
@@ -1954,6 +1957,29 @@ class WhoAtMePlugin(Star):
         if max_pages <= 0:
             return chunks
         return chunks[:max_pages]
+
+    def _select_query_records(
+        self,
+        records: list[dict[str, Any]],
+        target_name: str,
+        reverse: bool,
+    ) -> list[dict[str, Any]]:
+        max_pages = self._max_query_pages()
+        if max_pages <= 0:
+            return sorted(records, key=self._record_time, reverse=reverse)
+
+        selected: list[dict[str, Any]] = []
+        latest_first = sorted(records, key=self._record_time, reverse=True)
+        for record in latest_first:
+            trial = selected + [record]
+            blocks = self._build_blocks(trial, target_name, reverse=True)
+            if len(self._chunk_blocks(blocks)) > max_pages:
+                if not selected:
+                    selected = trial
+                break
+            selected = trial
+
+        return sorted(selected, key=self._record_time, reverse=reverse)
 
     def _dedupe_records(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         deduped: list[dict[str, Any]] = []
