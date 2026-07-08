@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -675,6 +676,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             "avatar": avatar,
             "message_id": str(data.get("message_id") or ""),
             "order": self._record_order(data),
+            "received_order": data.get("received_order"),
             "message": message,
             "has_message": bool(message.strip()),
             "message_html": html.escape(message).replace("\n", "<br>"),
@@ -752,7 +754,29 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 order if order is not None else -1,
                 received_order if received_order is not None else -1,
             )
+        loose_key = self._timeline_loose_message_key(msg)
+        if loose_key:
+            return loose_key
         return self._message_key(msg)
+
+    def _timeline_loose_message_key(self, msg: dict[str, Any]) -> tuple[Any, ...]:
+        if not (msg.get("is_at") or self._starts_with_at_display(msg.get("message"))):
+            return ()
+        images = self._record_images_key(msg)
+        media = self._record_media_key(msg)
+        if not images and not media:
+            return ()
+        return (
+            "visual_at",
+            str(msg.get("user_id") or ""),
+            self._record_time(msg),
+            images,
+            media,
+            self._record_quote_key(msg),
+        )
+
+    def _starts_with_at_display(self, value: Any) -> bool:
+        return str(value or "").lstrip().startswith(("@", "＠"))
 
     def _merge_timeline_message(self, left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
         use_right = bool(right.get("is_at") and not left.get("is_at"))
