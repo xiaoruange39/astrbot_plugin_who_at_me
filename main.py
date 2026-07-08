@@ -606,9 +606,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         return event.plain_result("已成功清除全部艾特数据")
 
     def _build_blocks(self, records: list[dict[str, Any]], target_name: str, reverse: bool = True) -> list[dict[str, Any]]:
-        blocks = []
+        messages = []
         for record in records:
-            messages = []
             if record.get("is_context"):
                 for idx, ctx in enumerate(record.get("before") or []):
                     msg = self._view_message(ctx, False, target_name)
@@ -631,24 +630,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                     msg["sort_time"] = float(ctx.get("time", 0)) + 0.001 + idx * 0.001
                     messages.append(msg)
 
-            blocks.append(
-                {
-                    "at_time": record.get("time", 0),
-                    "at_order": self._record_order(record),
-                    "at_received_order": self._record_received_order(record),
-                    "msgs": self._dedupe_messages(messages),
-                }
-            )
-
-        blocks.sort(
-            key=lambda item: (
-                self._numeric_order(item.get("at_time")) or 0,
-                item.get("at_order") if item.get("at_order") is not None else -1,
-                item.get("at_received_order") if item.get("at_received_order") is not None else -1,
-            ),
-            reverse=reverse,
-        )
-        return self._dedupe_block_context(blocks)
+        messages = self._dedupe_timeline_messages(messages, reverse=reverse)
+        return self._split_timeline_blocks(messages)
 
     def _view_message(self, data: dict[str, Any], is_at: bool, target_name: str) -> dict[str, Any]:
         user_id = str(data.get("user_id") or data.get("User") or "")
@@ -726,37 +709,37 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 return text
         return default
 
-    def _dedupe_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        seen: dict[tuple[Any, ...], dict[str, Any]] = {}
+    def _dedupe_timeline_messages(self, messages: list[dict[str, Any]], reverse: bool) -> list[dict[str, Any]]:
+        at_keys = {self._message_key(msg) for msg in messages if msg.get("is_at")}
+        seen_context: set[tuple[Any, ...]] = set()
+        result = []
         for msg in messages:
             key = self._message_key(msg)
-            if key not in seen or msg.get("is_at"):
-                seen[key] = msg
-        result = list(seen.values())
-        result.sort(key=self._message_sort_key)
+            if msg.get("is_at"):
+                result.append(msg)
+                continue
+            if key in at_keys or key in seen_context:
+                continue
+            seen_context.add(key)
+            result.append(msg)
+        result.sort(key=self._message_sort_key, reverse=reverse)
         return result
 
-    def _dedupe_block_context(self, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        at_keys = {
-            self._message_key(msg)
-            for block in blocks
-            for msg in block.get("msgs", [])
-            if msg.get("is_at")
-        }
-        seen_context: set[tuple[Any, ...]] = set()
-        for block in blocks:
-            messages = []
-            for msg in block.get("msgs", []):
-                if msg.get("is_at"):
-                    messages.append(msg)
-                    continue
+    def _split_timeline_blocks(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        current: list[dict[str, Any]] = []
+        current_has_at = False
 
-                key = self._message_key(msg)
-                if key in at_keys or key in seen_context:
-                    continue
-                seen_context.add(key)
-                messages.append(msg)
-            block["msgs"] = messages
+        for msg in messages:
+            if msg.get("is_at") and current and current_has_at:
+                blocks.append({"msgs": current})
+                current = []
+                current_has_at = False
+            current.append(msg)
+            current_has_at = current_has_at or bool(msg.get("is_at"))
+
+        if current:
+            blocks.append({"msgs": current})
         return blocks
 
     def _message_key(self, msg: dict[str, Any]) -> tuple[Any, ...]:
