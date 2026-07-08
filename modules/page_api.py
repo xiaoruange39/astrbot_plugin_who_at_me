@@ -7,9 +7,9 @@ from pathlib import Path
 from astrbot.api import logger
 
 try:
-    from ..constants import IMAGE_KINDS
+    from .constants import IMAGE_KINDS
 except ImportError:
-    from constants import IMAGE_KINDS
+    from modules.constants import IMAGE_KINDS
 
 
 class PageApiMixin:

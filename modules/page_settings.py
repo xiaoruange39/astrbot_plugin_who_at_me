@@ -10,7 +10,7 @@ from typing import Any
 from astrbot.api import logger
 
 try:
-    from ..constants import (
+    from .constants import (
         DEFAULT_FOOTER_IMAGE_FILE,
         DEFAULT_HEADER_IMAGE_FILE,
         IMAGE_KINDS,
@@ -20,7 +20,7 @@ try:
         PAGE_SETTINGS_DEFAULTS,
     )
 except ImportError:
-    from constants import (
+    from modules.constants import (
         DEFAULT_FOOTER_IMAGE_FILE,
         DEFAULT_HEADER_IMAGE_FILE,
         IMAGE_KINDS,
