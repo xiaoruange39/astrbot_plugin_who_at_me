@@ -759,9 +759,24 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
         base["is_at"] = bool(left.get("is_at") or right.get("is_at"))
         if not str(base.get("message") or "").strip() and str(other.get("message") or "").strip():
-            base["message"] = other.get("message")
-            base["message_html"] = other.get("message_html")
-            base["has_message"] = bool(other.get("has_message"))
+            message = str(other.get("message") or "")
+            if base.get("is_at"):
+                message = self._strip_at_display(
+                    message,
+                    [
+                        base.get("target_name"),
+                        other.get("target_name"),
+                        base.get("target"),
+                        other.get("target"),
+                        base.get("at"),
+                        other.get("at"),
+                        base.get("AtQQ"),
+                        other.get("AtQQ"),
+                    ],
+                )
+            base["message"] = message
+            base["message_html"] = html.escape(message).replace("\n", "<br>")
+            base["has_message"] = bool(message.strip())
         base["images"] = self._unique_strings([*(base.get("images") or []), *(other.get("images") or [])])
         base["media"] = self._unique_media([*(base.get("media") or []), *(other.get("media") or [])])
 
