@@ -57,6 +57,9 @@ class ConfigMixin:
     def _max_records_per_target(self) -> int:
         return max(1, self._config_int("record", "max_records_per_target", default=MAX_RECORDS_PER_TARGET))
 
+    def _recent_image_cache_records(self) -> int:
+        return max(0, self._config_int("record", "recent_image_cache_records", default=RECENT_IMAGE_CACHE_RECORDS))
+
     def _query_context_max_messages(self) -> int:
         return max(1, self._config_int("record", "query_context_max_messages", default=MAX_CONTEXT_MESSAGES))
 

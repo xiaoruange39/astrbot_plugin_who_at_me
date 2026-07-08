@@ -21,6 +21,12 @@
         "default": 300,
         "hint": "超过后会保留最新记录。"
       },
+      "recent_image_cache_records": {
+        "description": "最近多少条记录缓存消息图片",
+        "type": "int",
+        "default": 0,
+        "hint": "0 表示不缓存消息图片；大于 0 时仅最近 N 条记录保存本地图片缓存，旧记录会删除本地缓存并继续使用 QQ 临时链接。"
+      },
       "max_messages_per_image": {
         "description": "单张查询图最多展示的消息条数",
         "type": "int",

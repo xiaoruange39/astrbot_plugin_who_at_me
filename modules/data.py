@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import re
 import time
+import uuid
+from datetime import datetime
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
+from urllib.request import Request, urlopen
 
 from astrbot.api import logger
 
@@ -20,10 +27,173 @@ class DataMixin:
             records = []
         if any(self._records_are_duplicate(item, record) for item in records[-10:]):
             return
-        records.append(dict(record))
+        records.append(await self._cache_record_images(dict(record)))
         records = records[-self._max_records_per_target():]
+        self._prune_record_image_caches(records)
         await self.put_kv_data(key, records)
         await self._remember_index_key(key)
+
+    async def _cache_record_images(self, record: dict[str, Any]) -> dict[str, Any]:
+        if self._recent_image_cache_records() <= 0:
+            self._drop_record_image_cache(record, delete_files=False)
+            return record
+
+        cache = await self._cache_images(record.get("images") or record.get("image") or [])
+        if cache:
+            record["image_cache"] = cache
+
+        quote = record.get("quote")
+        if isinstance(quote, dict):
+            quote = dict(quote)
+            quote_cache = await self._cache_images(quote.get("images") or quote.get("image") or [])
+            if quote_cache:
+                quote["image_cache"] = quote_cache
+            record["quote"] = quote
+        return record
+
+    async def _cache_images(self, images: Any) -> list[dict[str, str]]:
+        if isinstance(images, str):
+            candidates = [images]
+        elif isinstance(images, list):
+            candidates = images
+        else:
+            return []
+
+        result = []
+        for image in candidates:
+            source = str(image or "").strip()
+            if not source:
+                continue
+            cached = await self._cache_image(source)
+            if cached:
+                result.append(cached)
+        return result
+
+    async def _cache_image(self, source: str) -> dict[str, str] | None:
+        try:
+            data, image_type = await asyncio.to_thread(self._read_image_source, source)
+            if not data:
+                return None
+            suffix = self._cached_image_suffix(data, source, image_type)
+            if not suffix:
+                return None
+            output = self._new_message_image_cache_path(suffix)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(data)
+            return {"source": source, "local": str(output)}
+        except Exception as exc:
+            logger.debug(f"[谁艾特我] 缓存消息图片失败: {type(exc).__name__}: {exc}")
+            return None
+
+    def _read_image_source(self, source: str) -> tuple[bytes, str]:
+        value = str(source or "").strip()
+        if not value:
+            return b"", ""
+        if re.match(r"^https?://", value, re.I):
+            request = Request(value, headers={"User-Agent": "Mozilla/5.0"})
+            with urlopen(request, timeout=10) as response:
+                image_type = str(response.headers.get("Content-Type") or "")
+                return self._read_limited_bytes(response), image_type
+        if value.startswith("base64://"):
+            return base64.b64decode(value[len("base64://") :]), "png"
+        if value.lower().startswith("data:image/"):
+            header, payload = value.split(",", 1)
+            image_type = header.split(";", 1)[0].rsplit("/", 1)[-1]
+            return base64.b64decode(payload), image_type
+        if re.match(r"^file://", value, re.I):
+            parsed = urlparse(value)
+            path_text = unquote(parsed.path or "")
+            if re.match(r"^/[A-Za-z]:/", path_text):
+                path_text = path_text[1:]
+            path = Path(path_text)
+            return path.read_bytes(), path.suffix
+
+        path = Path(value)
+        if path.exists():
+            return path.read_bytes(), path.suffix
+        return b"", ""
+
+    def _read_limited_bytes(self, response: Any, max_bytes: int = 20 * 1024 * 1024) -> bytes:
+        chunks = []
+        total = 0
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError("image is too large")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    def _cached_image_suffix(self, data: bytes, source: str = "", image_type: str = "") -> str:
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return ".png"
+        if data.startswith(b"\xff\xd8"):
+            return ".jpg"
+        if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            return ".webp"
+        if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+            return ".gif"
+        text = str(image_type or "").lower()
+        if "/" in text:
+            text = text.rsplit("/", 1)[-1]
+        text = text.split(";", 1)[0].strip().lstrip(".")
+        if text in {"png", "jpg", "jpeg", "webp", "gif"}:
+            return ".jpg" if text == "jpeg" else f".{text}"
+        suffix = Path(str(source or "")).suffix.lower()
+        return suffix if suffix in IMAGE_MIME_TYPES else ""
+
+    def _new_message_image_cache_path(self, suffix: str) -> Path:
+        cache_dir = self._message_image_cache_dir() / datetime.now().strftime("%Y%m%d")
+        suffix = suffix if suffix.startswith(".") else f".{suffix}"
+        return cache_dir / f"msg_{int(time.time())}_{uuid.uuid4().hex}{suffix}"
+
+    def _message_image_cache_dir(self) -> Path:
+        try:
+            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+            return Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_who_at_me" / "message_images"
+        except Exception:
+            import tempfile
+
+            return Path(tempfile.gettempdir()) / "astrbot_plugin_who_at_me" / "message_images"
+
+    def _prune_record_image_caches(self, records: list[dict[str, Any]]) -> None:
+        keep_count = self._recent_image_cache_records()
+        keep_from = max(0, len(records) - keep_count) if keep_count > 0 else len(records)
+        for index, record in enumerate(records):
+            if index < keep_from:
+                self._drop_record_image_cache(record, delete_files=True)
+
+    def _drop_record_image_cache(self, record: dict[str, Any], delete_files: bool) -> None:
+        cache = record.pop("image_cache", None)
+        if delete_files:
+            self._delete_image_cache_entries(cache)
+
+        quote = record.get("quote")
+        if isinstance(quote, dict):
+            cache = quote.pop("image_cache", None)
+            if delete_files:
+                self._delete_image_cache_entries(cache)
+
+    def _delete_image_cache_entries(self, entries: Any) -> None:
+        if not isinstance(entries, list):
+            return
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            self._delete_cached_image(entry.get("local"))
+
+    def _delete_cached_image(self, path_value: Any) -> None:
+        try:
+            path = Path(str(path_value or "")).resolve()
+            cache_dir = self._message_image_cache_dir().resolve()
+            if cache_dir == path or cache_dir not in path.parents:
+                return
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     async def _get_records(self, group_id: str, target: str) -> list[dict[str, Any]]:
         records = await self.get_kv_data(self._record_key(group_id, target), [])

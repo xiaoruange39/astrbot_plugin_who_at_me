@@ -679,7 +679,37 @@ class MessageMixin:
                 result.append(value)
         return self._unique_strings(result)
 
+    def _record_renderable_images(self, data: dict[str, Any]) -> list[str]:
+        candidates: list[Any] = []
+        cached_sources = set()
+        cache = data.get("image_cache")
+        if isinstance(cache, list):
+            for item in cache:
+                candidates.append(item)
+                if isinstance(item, dict):
+                    source = str(item.get("source") or "").strip()
+                    if source:
+                        cached_sources.add(source)
+
+        images = data.get("images") or data.get("image") or []
+        if isinstance(images, str):
+            images = [images]
+        if isinstance(images, list):
+            for image in images:
+                source = str(image or "").strip()
+                if source and source not in cached_sources:
+                    candidates.append(image)
+        return self._renderable_images(candidates)
+
     def _renderable_image(self, image: Any) -> str:
+        if isinstance(image, dict):
+            source = str(image.get("source") or "").strip()
+            for key in ("local", "path", "file", "url", "source"):
+                value = self._renderable_image(image.get(key))
+                if value:
+                    return value
+            return self._renderable_image(source)
+
         value = str(image or "").strip()
         if not value:
             return ""

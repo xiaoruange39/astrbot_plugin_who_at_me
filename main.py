@@ -657,7 +657,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         message = str(data.get("message") or "")
         if is_at:
             message = self._strip_at_display(message, [target_name, data.get("target"), data.get("at"), data.get("AtQQ")])
-        images = self._renderable_images(data.get("images") or data.get("image") or [])
+        images = self._record_renderable_images(data)
         role = str(data.get("role") or "member").lower()
         role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "群员")
         title = str(data.get("title") or "")
@@ -707,7 +707,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         if not isinstance(quote, dict):
             return None
         message = str(quote.get("message") or "").strip()
-        images = self._renderable_images(quote.get("images") or quote.get("image") or [])
+        images = self._record_renderable_images(quote)
         if not message and not images:
             return None
         nickname = self._display_name(quote.get("name"), quote.get("nickname"), quote.get("user_id"), default="引用消息")
