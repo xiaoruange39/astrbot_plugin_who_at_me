@@ -342,6 +342,26 @@ class RenderingMixin:
                       img.remove();
                     }
                   }
+
+                  const videos = Array.from(document.querySelectorAll("video.media-video") || []);
+                  await Promise.race([
+                    Promise.all(videos.map((video) => new Promise((resolve) => {
+                      if (video.readyState >= 1) {
+                        resolve();
+                        return;
+                      }
+                      const done = () => resolve();
+                      video.addEventListener("loadedmetadata", done, { once: true });
+                      video.addEventListener("loadeddata", done, { once: true });
+                      video.addEventListener("error", done, { once: true });
+                    }))),
+                    delay(assetTimeout),
+                  ]);
+                  for (const video of videos) {
+                    try {
+                      video.currentTime = Math.min(0.1, video.duration || 0.1);
+                    } catch (_) {}
+                  }
                 }
                 """,
                 asset_timeout,

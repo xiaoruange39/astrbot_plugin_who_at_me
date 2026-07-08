@@ -29,12 +29,14 @@ class MessageMixin:
         role = str(member_info.get("role") or getattr(sender, "role", "") or self._raw_sender_value(event, "role") or "member")
         sender_name = self._display_name(member_info.get("card"), member_info.get("nickname"), self._sender_name(event), sender_id)
         images = self._images(event)
+        media = self._media(event)
         message = self._message_text_for_record(event, mentions or [])
         poke = await self._poke_message(event, group_id, sender_name)
         record = {
             "user_id": sender_id,
             "message": message,
             "images": images,
+            "media": media,
             "name": sender_name,
             "role": role,
             "title": member_info.get("title") or "",
@@ -63,6 +65,7 @@ class MessageMixin:
             "user_id": record["user_id"],
             "message": record["message"],
             "images": record["images"],
+            "media": record.get("media") or [],
             "name": record["name"],
             "role": record["role"],
             "title": record.get("title") or "",
@@ -241,6 +244,16 @@ class MessageMixin:
         for text in self._raw_message_texts(event):
             images.extend(self._images_from_cq(text))
         return self._unique_strings(images)
+
+    def _media(self, event: AstrMessageEvent) -> list[dict[str, str]]:
+        media: list[dict[str, str]] = []
+        raw_segments = self._raw_message_segments(event)
+        if raw_segments:
+            media.extend(self._segments_media(raw_segments))
+        media.extend(self._segments_media(self._message_chain(event)))
+        for text in self._raw_message_texts(event):
+            media.extend(self._media_from_cq(text))
+        return self._unique_media(media)
 
     def _raw_message_texts(self, event: AstrMessageEvent) -> list[str]:
         result = []
@@ -639,7 +652,6 @@ class MessageMixin:
                 continue
             names = [
                 "url",
-                "file",
                 "path",
                 "file_path",
                 "filePath",
@@ -647,6 +659,7 @@ class MessageMixin:
                 "localPath",
                 "src",
                 "image",
+                "file",
             ]
             if seg_type in {"video", "shortvideo"}:
                 names = [
@@ -659,12 +672,9 @@ class MessageMixin:
                     "poster",
                     "image",
                 ]
-            value = self._segment_value(
-                segment,
-                names,
-            )
-            if value:
-                urls.append(str(value))
+            values = self._segment_values(segment, names)
+            if values:
+                urls.extend(str(value) for value in values)
                 continue
             data = self._segment_data(segment)
             base64_value = self._first_mapping_value(data, ["base64"]) if data else None
@@ -673,6 +683,110 @@ class MessageMixin:
                 if text:
                     urls.append(text if text.startswith(("base64://", "data:image/")) else f"base64://{text}")
         return self._unique_strings(urls)
+
+    def _segments_media(self, segments: list[Any]) -> list[dict[str, str]]:
+        media = []
+        for segment in segments:
+            if self._is_reference_segment(segment):
+                continue
+            item = self._media_from_segment(segment)
+            if item:
+                media.append(item)
+        return self._unique_media(media)
+
+    def _media_from_segment(self, segment: Any) -> dict[str, str] | None:
+        seg_type = self._segment_type(segment)
+        if seg_type in {"video", "shortvideo"}:
+            cover = self._first_string(
+                self._segment_values(
+                    segment,
+                    ["cover", "cover_url", "coverUrl", "thumbnail", "thumb", "preview", "poster", "image"],
+                )
+            )
+            source = self._first_string(
+                self._segment_values(
+                    segment,
+                    ["url", "path", "file_path", "filePath", "local_path", "localPath", "src", "file"],
+                )
+            )
+            title = self._display_name(
+                self._segment_value(segment, ["title", "name", "file_name", "fileName", "filename"]),
+                default="视频",
+            )
+            return {"type": "video", "title": title, "source": source, "cover": cover}
+        if seg_type == "file":
+            source = self._first_string(
+                self._segment_values(segment, ["url", "path", "file_path", "filePath", "local_path", "localPath", "file_", "file"])
+            )
+            title = self._display_name(
+                self._segment_value(segment, ["name", "file_name", "fileName", "filename", "title"]),
+                self._basename(source),
+                default="文件",
+            )
+            size = str(self._segment_value(segment, ["size", "file_size", "fileSize"]) or "")
+            return {"type": "file", "title": title, "source": source, "size": size}
+        if seg_type in {"record", "voice", "audio"}:
+            source = self._first_string(
+                self._segment_values(segment, ["url", "path", "file_path", "filePath", "local_path", "localPath", "file"])
+            )
+            text = str(self._segment_value(segment, ["text", "title", "name"]) or "")
+            return {"type": "audio", "title": text or "语音", "source": source}
+        if seg_type in {"mface", "market_face", "marketface", "face", "emoji"}:
+            return {"type": "emoji", "title": "表情"}
+        return None
+
+    def _first_string(self, values: list[Any]) -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    def _basename(self, value: Any) -> str:
+        text = str(value or "").replace("\\", "/").strip()
+        if not text:
+            return ""
+        return text.rsplit("/", 1)[-1]
+
+    def _unique_media(self, items: list[dict[str, str]]) -> list[dict[str, str]]:
+        result = []
+        seen = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            key = (
+                str(item.get("type") or ""),
+                str(item.get("source") or ""),
+                str(item.get("cover") or ""),
+                str(item.get("title") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({k: str(v) for k, v in item.items() if v is not None})
+        return result
+
+    def _segment_values(self, segment: Any, names: list[str]) -> list[Any]:
+        values = []
+        data = self._segment_data(segment)
+        if data:
+            for name in names:
+                value = data.get(name)
+                if value is not None and value != "":
+                    values.append(value)
+        source = segment if isinstance(segment, dict) else None
+        if source:
+            for name in names:
+                value = source.get(name)
+                if value is not None and value != "":
+                    values.append(value)
+        if not isinstance(segment, dict):
+            for name in names:
+                if hasattr(segment, name):
+                    value = getattr(segment, name)
+                    if value is not None and value != "":
+                        values.append(value)
+        return self._unique_strings(values)
 
     def _segment_media_summary(self, segment: Any) -> str:
         seg_type = self._segment_type(segment)
@@ -699,8 +813,14 @@ class MessageMixin:
 
     def _segment_type(self, segment: Any) -> str:
         if isinstance(segment, dict):
-            return str(segment.get("type") or segment.get("seg_type") or "").lower()
-        seg_type = str(getattr(segment, "type", "") or getattr(segment, "seg_type", "") or "").lower()
+            value = segment.get("type") or segment.get("seg_type") or ""
+        else:
+            value = getattr(segment, "type", "") or getattr(segment, "seg_type", "")
+        if hasattr(value, "value"):
+            value = value.value
+        seg_type = str(value or "").lower()
+        if "." in seg_type:
+            seg_type = seg_type.rsplit(".", 1)[-1]
         return seg_type or segment.__class__.__name__.lower()
 
     def _segment_data(self, segment: Any) -> dict[str, Any]:
@@ -781,6 +901,38 @@ class MessageMixin:
                 )
         return self._unique_strings(images)
 
+    def _media_from_cq(self, text: str) -> list[dict[str, str]]:
+        media = []
+        for match in re.finditer(r"\[CQ:(video|shortvideo|file|record|voice|audio),([^\]]+)\]", text or ""):
+            seg_type = match.group(1).lower()
+            data = self._parse_cq_attrs(match.group(2))
+            if seg_type in {"video", "shortvideo"}:
+                cover = str(
+                    self._first_mapping_value(
+                        data,
+                        ["cover", "cover_url", "coverUrl", "thumbnail", "thumb", "preview", "poster", "image"],
+                    )
+                    or ""
+                )
+                source = str(
+                    self._first_mapping_value(data, ["url", "path", "file_path", "local_path", "src", "file"]) or ""
+                )
+                title = str(self._first_mapping_value(data, ["title", "name", "filename", "file_name"]) or "视频")
+                media.append({"type": "video", "title": title, "source": source, "cover": cover})
+            elif seg_type == "file":
+                source = str(self._first_mapping_value(data, ["url", "path", "file_path", "local_path", "file"]) or "")
+                title = str(
+                    self._first_mapping_value(data, ["name", "filename", "file_name", "title"])
+                    or self._basename(source)
+                    or "文件"
+                )
+                size = str(self._first_mapping_value(data, ["size", "file_size"]) or "")
+                media.append({"type": "file", "title": title, "source": source, "size": size})
+            else:
+                source = str(self._first_mapping_value(data, ["url", "path", "file_path", "local_path", "file"]) or "")
+                media.append({"type": "audio", "title": "语音", "source": source})
+        return self._unique_media(media)
+
     def _renderable_images(self, images: Any) -> list[str]:
         if isinstance(images, str):
             candidates = [images]
@@ -817,6 +969,48 @@ class MessageMixin:
                 if source and source not in cached_sources:
                     candidates.append(image)
         return self._renderable_images(candidates)
+
+    def _record_renderable_media(self, data: dict[str, Any]) -> list[dict[str, str]]:
+        raw_media = data.get("media") or []
+        if not isinstance(raw_media, list):
+            return []
+        result = []
+        for item in raw_media:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("type") or "file").lower()
+            card = {
+                "type": kind,
+                "title": str(item.get("title") or {"video": "视频", "audio": "语音", "file": "文件"}.get(kind, "媒体")),
+                "size": str(item.get("size") or ""),
+                "cover": self._renderable_image(self._media_cached_value(item, "cover") or item.get("cover")),
+                "source": self._renderable_media_source(self._media_cached_value(item, "source") or item.get("source")),
+            }
+            result.append(card)
+        return self._unique_media(result)
+
+    def _media_cached_value(self, item: dict[str, Any], key: str) -> str:
+        cache_key = f"{key}_cache"
+        cached = item.get(cache_key)
+        if isinstance(cached, dict):
+            return str(cached.get("local") or cached.get("url") or cached.get("source") or "")
+        return ""
+
+    def _renderable_media_source(self, source: Any) -> str:
+        value = str(source or "").strip()
+        if not value:
+            return ""
+        if re.match(r"^(https?|file)://", value, re.I):
+            return value
+        if value.startswith(("base64://", "data:")):
+            return value
+        try:
+            path = Path(value)
+            if path.exists():
+                return path.resolve().as_uri()
+        except (OSError, ValueError):
+            pass
+        return value
 
     def _renderable_image(self, image: Any) -> str:
         if isinstance(image, dict):
@@ -1084,6 +1278,8 @@ class MessageMixin:
             return False
         if self._record_images_key(left) != self._record_images_key(right):
             return False
+        if self._record_media_key(left) != self._record_media_key(right):
+            return False
         if self._record_quote_key(left) != self._record_quote_key(right):
             return False
 
@@ -1102,6 +1298,20 @@ class MessageMixin:
 
     def _record_images_key(self, record: dict[str, Any]) -> tuple[str, ...]:
         return tuple(str(image) for image in (record.get("images") or record.get("image") or []))
+
+    def _record_media_key(self, record: dict[str, Any]) -> tuple[tuple[str, str, str], ...]:
+        media = record.get("media") or []
+        if not isinstance(media, list):
+            return ()
+        return tuple(
+            (
+                str(item.get("type") or ""),
+                str(item.get("source") or ""),
+                str(item.get("title") or ""),
+            )
+            for item in media
+            if isinstance(item, dict)
+        )
 
     def _record_quote_key(self, record: dict[str, Any]) -> tuple[str, str, tuple[str, ...]]:
         quote = record.get("quote")

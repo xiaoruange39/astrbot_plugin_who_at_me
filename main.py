@@ -641,6 +641,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         if is_at:
             message = self._strip_at_display(message, [target_name, data.get("target"), data.get("at"), data.get("AtQQ")])
         images = self._record_renderable_images(data)
+        media = self._record_renderable_media(data)
+        if media and self._is_media_summary_message(message):
+            message = ""
         role = str(data.get("role") or "member").lower()
         role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "群员")
         title = str(data.get("title") or "")
@@ -669,6 +672,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             "has_message": bool(message.strip()),
             "message_html": html.escape(message).replace("\n", "<br>"),
             "images": images,
+            "media": media,
             "quote": self._view_quote(data.get("quote")),
             "time": data.get("time", 0),
             "time_text": self._time_text(data.get("time", 0)),
@@ -752,6 +756,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             base["message_html"] = other.get("message_html")
             base["has_message"] = bool(other.get("has_message"))
         base["images"] = self._unique_strings([*(base.get("images") or []), *(other.get("images") or [])])
+        base["media"] = self._unique_media([*(base.get("media") or []), *(other.get("media") or [])])
 
         if not base.get("quote") and other.get("quote"):
             base["quote"] = other.get("quote")
@@ -763,6 +768,10 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 quote["message_html"] = other["quote"].get("message_html")
             base["quote"] = quote
         return base
+
+    def _is_media_summary_message(self, message: str) -> bool:
+        text = re.sub(r"\s+", " ", str(message or "")).strip()
+        return text in {"[视频]", "[语音]", "[文件]", "[表情]", "[卡片消息]"} or text.startswith("[文件] ")
 
     def _split_timeline_blocks(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         blocks: list[dict[str, Any]] = []
@@ -790,6 +799,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             self._record_time(msg),
             self._record_message_key(msg),
             self._record_images_key(msg),
+            self._record_media_key(msg),
             self._record_quote_key(msg),
         )
 

@@ -47,6 +47,8 @@ class DataMixin:
         if cache:
             record["image_cache"] = cache
 
+        await self._cache_media_covers(record)
+
         quote = record.get("quote")
         if isinstance(quote, dict):
             quote = dict(quote)
@@ -55,6 +57,20 @@ class DataMixin:
                 quote["image_cache"] = quote_cache
             record["quote"] = quote
         return record
+
+    async def _cache_media_covers(self, record: dict[str, Any]) -> None:
+        media = record.get("media")
+        if not isinstance(media, list):
+            return
+        for item in media:
+            if not isinstance(item, dict):
+                continue
+            cover = str(item.get("cover") or "").strip()
+            if not cover:
+                continue
+            cached = await self._cache_image(cover)
+            if cached:
+                item["cover_cache"] = cached
 
     async def _cache_images(self, images: Any) -> list[dict[str, str]]:
         if isinstance(images, str):
@@ -181,6 +197,15 @@ class DataMixin:
             cache = quote.pop("image_cache", None)
             if delete_files:
                 self._delete_image_cache_entries(cache)
+
+        media = record.get("media")
+        if isinstance(media, list):
+            for item in media:
+                if not isinstance(item, dict):
+                    continue
+                cache = item.pop("cover_cache", None)
+                if delete_files:
+                    self._delete_image_cache_entries([cache] if isinstance(cache, dict) else cache)
 
     def _delete_image_cache_entries(self, entries: Any) -> None:
         if not isinstance(entries, list):
