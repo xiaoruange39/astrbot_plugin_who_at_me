@@ -361,6 +361,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         )
         quote = await self._quote(event) if mentions or needs_context else None
         current = await self._context_message(event, group_id, mentions, sender_info, quote) if needs_context else None
+        if current:
+            current = await self._cache_record_images(current)
 
         if context_on and current:
             await self._append_after_context(group_id, current)
@@ -443,6 +445,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             pending_record["is_context"] = True
             pending_record["before"] = list(before)
             pending_record["after"] = []
+        pending_record = await self._cache_record_images(pending_record)
 
         key = self._reminder_pending_key(group_id, target)
         pending = await self._get_pending_reminders(group_id, target)
@@ -658,6 +661,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                     messages.append(msg)
 
         messages = self._dedupe_timeline_messages(messages, reverse=reverse)
+        messages = [message for message in messages if self._timeline_message_visible(message)]
         return self._split_timeline_blocks(messages)
 
     def _view_message(self, data: dict[str, Any], is_at: bool, target_name: str, target_id: str = "") -> dict[str, Any]:
@@ -785,6 +789,17 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         result = [seen[key] for key in order]
         result.sort(key=self._message_sort_key, reverse=reverse)
         return result
+
+    def _timeline_message_visible(self, msg: dict[str, Any]) -> bool:
+        return bool(
+            msg.get("has_message")
+            or msg.get("images")
+            or msg.get("media")
+            or msg.get("quote")
+            or msg.get("is_poke")
+            or msg.get("is_at")
+            or msg.get("has_message_after_images")
+        )
 
     def _timeline_message_key(self, msg: dict[str, Any]) -> tuple[Any, ...]:
         loose_key = self._timeline_loose_message_key(msg)

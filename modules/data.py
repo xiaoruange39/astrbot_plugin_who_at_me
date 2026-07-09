@@ -52,20 +52,53 @@ class DataMixin:
             self._drop_record_image_cache(record, delete_files=False)
             return record
 
-        cache = await self._cache_images(record.get("images") or record.get("image") or [])
-        if cache:
-            record["image_cache"] = cache
+        await self._cache_record_direct_images(record)
 
         await self._cache_media_covers(record)
 
         quote = record.get("quote")
         if isinstance(quote, dict):
             quote = dict(quote)
-            quote_cache = await self._cache_images(quote.get("images") or quote.get("image") or [])
-            if quote_cache:
-                quote["image_cache"] = quote_cache
+            await self._cache_record_direct_images(quote)
             record["quote"] = quote
+
+        for key in ("before", "after"):
+            items = record.get(key)
+            if not isinstance(items, list):
+                continue
+            cached_items = []
+            for item in items:
+                if isinstance(item, dict):
+                    cached_items.append(await self._cache_record_images(dict(item)))
+                else:
+                    cached_items.append(item)
+            record[key] = cached_items
         return record
+
+    async def _cache_record_direct_images(self, record: dict[str, Any]) -> None:
+        cache = record.get("image_cache")
+        existing_cache = list(cache) if isinstance(cache, list) else []
+        cached_sources = {
+            str(item.get("source") or "").strip()
+            for item in existing_cache
+            if isinstance(item, dict) and str(item.get("source") or "").strip()
+        }
+
+        images = record.get("images") or record.get("image") or []
+        if isinstance(images, str):
+            images = [images]
+        if not isinstance(images, list):
+            return
+
+        candidates = []
+        for image in images:
+            source = str(image or "").strip()
+            if source and source not in cached_sources:
+                candidates.append(image)
+
+        new_cache = await self._cache_images(candidates)
+        if new_cache:
+            record["image_cache"] = [*existing_cache, *new_cache]
 
     async def _cache_media_covers(self, record: dict[str, Any]) -> None:
         media = record.get("media")
@@ -217,6 +250,13 @@ class DataMixin:
             for item in media:
                 if isinstance(item, dict) and (item.get("cover") or item.get("cover_cache")):
                     return True
+        for key in ("before", "after"):
+            items = record.get(key)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict) and self._record_has_image_content(item):
+                    return True
         return False
 
     def _drop_record_image_cache(self, record: dict[str, Any], delete_files: bool) -> None:
@@ -238,6 +278,14 @@ class DataMixin:
                 cache = item.pop("cover_cache", None)
                 if delete_files:
                     self._delete_image_cache_entries([cache] if isinstance(cache, dict) else cache)
+
+        for key in ("before", "after"):
+            items = record.get(key)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict):
+                    self._drop_record_image_cache(item, delete_files=delete_files)
 
     def _delete_image_cache_entries(self, entries: Any) -> None:
         if not isinstance(entries, list):

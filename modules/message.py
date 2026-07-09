@@ -867,7 +867,7 @@ class MessageMixin:
         return any(token in cls_name for token in REFERENCE_SEGMENT_TYPES)
 
     def _is_image_segment_type(self, seg_type: str) -> bool:
-        return str(seg_type or "").lower() in IMAGE_SEGMENT_TYPES
+        return self._normalize_segment_type(seg_type) in IMAGE_SEGMENT_TYPES
 
     def _segments_from_value(self, value: Any) -> list[Any]:
         if isinstance(value, list):
@@ -1114,12 +1114,24 @@ class MessageMixin:
             value = segment.get("type") or segment.get("seg_type") or ""
         else:
             value = getattr(segment, "type", "") or getattr(segment, "seg_type", "")
+        return self._normalize_segment_type(value) or self._normalize_segment_type(segment.__class__.__name__) or segment.__class__.__name__.lower()
+
+    def _normalize_segment_type(self, value: Any) -> str:
         if hasattr(value, "value"):
             value = value.value
-        seg_type = str(value or "").lower()
-        if "." in seg_type:
-            seg_type = seg_type.rsplit(".", 1)[-1]
-        return seg_type or segment.__class__.__name__.lower()
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = text.lower()
+        quoted = re.search(r"['\"]([a-z_][a-z0-9_]*)['\"]", text)
+        if quoted:
+            text = quoted.group(1)
+        elif "." in text:
+            text = text.rsplit(".", 1)[-1]
+        if ":" in text:
+            text = text.split(":", 1)[0]
+        text = text.strip("<> ")
+        return re.sub(r"[^a-z0-9_]+", "", text)
 
     def _segment_data(self, segment: Any) -> dict[str, Any]:
         if isinstance(segment, dict):
