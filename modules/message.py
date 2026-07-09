@@ -318,14 +318,14 @@ class MessageMixin:
         return list(dict.fromkeys(result))
 
     async def _images(self, event: AstrMessageEvent) -> list[str]:
-        images = []
         raw_segments = self._raw_message_segments(event)
         chain_segments = self._message_chain(event)
-        if raw_segments:
-            images.extend(self._segments_images(raw_segments))
-        images.extend(self._segments_images(chain_segments))
-        for text in self._raw_message_texts(event):
-            images.extend(self._images_from_cq(text))
+        raw_images = self._segments_images(raw_segments) if raw_segments else []
+        chain_images = self._segments_images(chain_segments)
+        images = chain_images or raw_images
+        if not images:
+            for text in self._raw_message_texts(event):
+                images.extend(self._images_from_cq(text))
         candidates = self._unique_strings(images)
         resolved = await self._resolve_image_sources(event, candidates)
         raw_texts = self._raw_message_texts(event)
