@@ -557,6 +557,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         blocks = self._build_blocks(records, target_name, target, reverse=query_reverse)
         chunks = self._chunk_blocks(blocks)
         chunks = self._limit_chunks(chunks, self._max_query_pages())
+        self._log_query_image_diagnostics(group_id, target, records, page_count=len(chunks))
         if not chunks:
             return [event.plain_result(self._plain_summary(records, target_name))]
 

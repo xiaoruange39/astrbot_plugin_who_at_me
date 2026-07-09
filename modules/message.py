@@ -118,6 +118,13 @@ class MessageMixin:
             record["poke"] = poke
         if quote:
             record["quote"] = quote
+        self._log_record_image_diagnostics(
+            event,
+            group_id,
+            record,
+            mentions or [],
+            kind="mention" if mentions else "context",
+        )
         return record
 
     async def _context_message(
@@ -1255,6 +1262,69 @@ class MessageMixin:
     def _debug_text(self, value: Any, limit: int = 240) -> str:
         text = str(value or "").replace("\n", "\\n").replace("\r", "\\r")
         return text if len(text) <= limit else text[:limit] + "..."
+
+    def _log_record_image_diagnostics(
+        self,
+        event: AstrMessageEvent,
+        group_id: str,
+        record: dict[str, Any],
+        mentions: list[str],
+        *,
+        kind: str,
+    ) -> None:
+        raw_segments = self._raw_message_segments(event)
+        chain_segments = self._message_chain(event)
+        raw_texts = self._raw_message_texts(event)
+        has_image_hint = self._has_image_debug_hint([*raw_segments, *chain_segments, *raw_texts])
+        images = record.get("images") or record.get("image") or []
+        media = record.get("media") or []
+        image_count = len(images) if isinstance(images, list) else int(bool(images))
+        media_count = len(media) if isinstance(media, list) else int(bool(media))
+        message_preview = self._debug_text(record.get("message"), limit=120)
+        summary = (
+            "[who_at_me] record image diagnostic "
+            f"kind={kind} group={group_id} sender={record.get('user_id') or ''} "
+            f"msg_id={record.get('message_id') or ''} mentions={self._debug_text_values(mentions)} "
+            f"images={image_count} media={media_count} image_hint={has_image_hint} "
+            f"message={message_preview}"
+        )
+        if has_image_hint and image_count <= 0 and media_count <= 0:
+            logger.warning(
+                summary
+                + " raw="
+                + str(self._segments_debug_summary(raw_segments))
+                + " chain="
+                + str(self._segments_debug_summary(chain_segments))
+                + " raw_texts="
+                + str(self._debug_text_values(raw_texts))
+            )
+        elif mentions or has_image_hint or image_count or media_count:
+            logger.info(summary)
+
+    def _log_query_image_diagnostics(
+        self,
+        group_id: str,
+        target: str,
+        records: list[dict[str, Any]],
+        *,
+        page_count: int,
+    ) -> None:
+        image_records = 0
+        cached_records = 0
+        media_records = 0
+        for record in records:
+            images = record.get("images") or record.get("image") or []
+            if images:
+                image_records += 1
+            if record.get("image_cache"):
+                cached_records += 1
+            if record.get("media"):
+                media_records += 1
+        logger.info(
+            "[who_at_me] query image diagnostic "
+            f"group={group_id} target={target} records={len(records)} pages={page_count} "
+            f"with_images={image_records} with_cache={cached_records} with_media={media_records}"
+        )
 
     def _segment_value(self, segment: Any, names: list[str]) -> Any:
         data = self._segment_data(segment)
