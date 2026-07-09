@@ -25,9 +25,18 @@ class DataMixin:
         records = await self.get_kv_data(key, [])
         if not isinstance(records, list):
             records = []
-        if any(self._records_are_duplicate(item, record) for item in records[-10:]):
+        cached_record = await self._cache_record_images(dict(record))
+        start = max(0, len(records) - 10)
+        for index in range(start, len(records)):
+            item = records[index]
+            if not isinstance(item, dict) or not self._records_are_duplicate(item, cached_record):
+                continue
+            records[index] = self._merge_duplicate_record(item, cached_record)
+            self._prune_record_image_caches(records)
+            await self.put_kv_data(key, records)
+            await self._remember_index_key(key)
             return
-        records.append(await self._cache_record_images(dict(record)))
+        records.append(cached_record)
         max_records = self._max_records_per_target()
         dropped_records = records[:-max_records]
         records = records[-max_records:]
@@ -266,6 +275,98 @@ class DataMixin:
     async def _get_pending_reminders(self, group_id: str, target: str) -> list[dict[str, Any]]:
         pending = await self.get_kv_data(self._reminder_pending_key(group_id, target), [])
         return pending if isinstance(pending, list) else []
+
+    async def _remove_recalled_message(self, group_id: str, message_id: str) -> int:
+        message_id = str(message_id or "").strip()
+        if not group_id or not message_id:
+            return 0
+
+        removed = 0
+        touched_targets: set[str] = set()
+        keys = await self.get_kv_data(INDEX_KEY, [])
+        if not isinstance(keys, list):
+            keys = []
+        prefix = f"records:{group_id}:"
+
+        for key in list(keys):
+            if not isinstance(key, str) or not key.startswith(prefix):
+                continue
+            records = await self.get_kv_data(key, [])
+            if not isinstance(records, list):
+                continue
+            next_records, count = self._remove_recalled_from_records(records, message_id)
+            if not count:
+                continue
+            target = key[len(prefix) :]
+            touched_targets.add(target)
+            removed += count
+            await self.put_kv_data(key, next_records)
+
+        for target in touched_targets:
+            pending_key = self._reminder_pending_key(group_id, target)
+            pending = await self.get_kv_data(pending_key, [])
+            if not isinstance(pending, list):
+                continue
+            next_pending, count = self._remove_recalled_from_records(pending, message_id)
+            if not count:
+                continue
+            removed += count
+            if next_pending:
+                await self.put_kv_data(pending_key, next_pending)
+            else:
+                await self.delete_kv_data(pending_key)
+
+        cache = self.before_cache.get(group_id, []) if hasattr(self, "before_cache") else []
+        if isinstance(cache, list):
+            next_cache, count = self._remove_recalled_from_records(cache, message_id)
+            if count:
+                removed += count
+                self.before_cache[group_id] = next_cache
+        return removed
+
+    def _remove_recalled_from_records(
+        self,
+        records: list[dict[str, Any]],
+        message_id: str,
+    ) -> tuple[list[dict[str, Any]], int]:
+        kept: list[dict[str, Any]] = []
+        removed = 0
+        for record in records:
+            if not isinstance(record, dict):
+                kept.append(record)
+                continue
+            if self._record_has_message_id(record, message_id):
+                self._drop_record_image_cache(record, delete_files=True)
+                removed += 1
+                continue
+
+            item = dict(record)
+            for key in ("before", "after"):
+                value = item.get(key)
+                if not isinstance(value, list):
+                    continue
+                nested, count = self._remove_recalled_from_records(value, message_id)
+                if count:
+                    item[key] = nested
+                    removed += count
+
+            quote = item.get("quote")
+            if isinstance(quote, dict) and self._record_has_message_id(quote, message_id):
+                self._drop_record_image_cache({"quote": quote}, delete_files=True)
+                item.pop("quote", None)
+                removed += 1
+            kept.append(item)
+        return kept, removed
+
+    def _record_has_message_id(self, record: dict[str, Any], message_id: str) -> bool:
+        target = str(message_id or "").strip()
+        if not target:
+            return False
+        for key in ("message_id", "messageId", "msg_id", "msgId", "id", "real_id", "realId"):
+            if str(record.get(key) or "").strip() == target:
+                return True
+        order = self._record_order(record)
+        return order is not None and str(order) == target
 
     async def _remember_sender_member(self, event: AstrMessageEvent, group_id: str, user_id: str) -> None:
         if not group_id or not user_id:

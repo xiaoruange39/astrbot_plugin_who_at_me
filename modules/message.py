@@ -67,6 +67,9 @@ IMAGE_SOURCE_KEYS = [
     "fileUuid",
 ]
 VIDEO_COVER_KEYS = ["cover", "cover_url", "coverUrl", "thumbnail", "thumb", "preview", "poster", "image"]
+CHAT_RECORD_TEXT = "[聊天记录]"
+CHAT_RECORD_SEGMENT_TYPES = {"forward", "forward_msg", "merged_forward", "multimsg"}
+RECALL_NOTICE_TYPES = {"group_recall", "friend_recall", "recall", "message_recall", "revoke", "message_revoke"}
 
 
 class MessageMixin:
@@ -382,6 +385,56 @@ class MessageMixin:
             result.append(ALL_TARGET)
         else:
             result.append(value_str)
+
+    def _recall_message_id(self, event: AstrMessageEvent) -> str:
+        data = self._recall_event_data(event)
+        if not data:
+            return ""
+        value = self._first_mapping_value(data, ["message_id", "messageId", "msg_id", "msgId", "id", "real_id", "realId"])
+        return str(value or "").strip()
+
+    def _recall_event_data(self, event: AstrMessageEvent) -> dict[str, Any]:
+        for data in self._event_mapping_candidates(event):
+            if self._mapping_is_recall_notice(data):
+                return data
+        return {}
+
+    def _event_mapping_candidates(self, event: AstrMessageEvent) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        raw = getattr(event.message_obj, "raw_message", None)
+        for value in (
+            raw,
+            getattr(event, "raw_event", None),
+            getattr(event, "raw", None),
+            getattr(event, "data", None),
+            getattr(event.message_obj, "raw_event", None),
+            getattr(event.message_obj, "data", None),
+        ):
+            if isinstance(value, dict):
+                result.append(value)
+        for segment in [*self._raw_message_segments(event), *self._message_chain(event)]:
+            data = self._segment_data(segment)
+            if data:
+                result.append(data)
+        return result
+
+    def _mapping_is_recall_notice(self, data: dict[str, Any]) -> bool:
+        values = [
+            data.get("post_type"),
+            data.get("postType"),
+            data.get("notice_type"),
+            data.get("noticeType"),
+            data.get("sub_type"),
+            data.get("subType"),
+            data.get("type"),
+            data.get("event"),
+            data.get("action"),
+        ]
+        for value in values:
+            text = str(value or "").lower()
+            if text in RECALL_NOTICE_TYPES or "recall" in text or "revoke" in text:
+                return True
+        return False
 
     def _mention_after_image(self, event: AstrMessageEvent, mentions: list[str]) -> bool:
         segments = self._raw_message_segments(event) or self._message_chain(event)
@@ -977,6 +1030,37 @@ class MessageMixin:
             return True
         return False
 
+    def _is_chat_record_segment(self, seg_type: str, data: dict[str, Any] | None = None) -> bool:
+        seg_type = str(seg_type or "").lower()
+        return seg_type in CHAT_RECORD_SEGMENT_TYPES or self._looks_like_chat_record(data or {})
+
+    def _looks_like_chat_record(self, data: dict[str, Any]) -> bool:
+        if not isinstance(data, dict):
+            return False
+        text = self._mapping_text_blob(data).lower()
+        return any(
+            token in text
+            for token in (
+                "聊天记录",
+                "合并转发",
+                "forward",
+                "multimsg",
+                "multi_msg",
+                "com.tencent.multimsg",
+            )
+        )
+
+    def _mapping_text_blob(self, value: Any) -> str:
+        if isinstance(value, dict):
+            parts = []
+            for key, item in value.items():
+                parts.append(str(key))
+                parts.append(self._mapping_text_blob(item))
+            return " ".join(parts)
+        if isinstance(value, list):
+            return " ".join(self._mapping_text_blob(item) for item in value)
+        return str(value or "")
+
     def _segment_values(self, segment: Any, names: list[str]) -> list[Any]:
         values = []
         data = self._segment_data(segment)
@@ -1001,8 +1085,11 @@ class MessageMixin:
 
     def _segment_media_summary(self, segment: Any) -> str:
         seg_type = self._segment_type(segment)
+        data = self._segment_data(segment)
         if self._is_image_segment_type(seg_type):
             return ""
+        if self._is_chat_record_segment(seg_type, data):
+            return CHAT_RECORD_TEXT
         if seg_type in {"mface", "market_face", "marketface", "face", "emoji"}:
             return "[表情]"
         if seg_type in {"video", "shortvideo"}:
@@ -1060,9 +1147,14 @@ class MessageMixin:
 
     def _cq_media_summary(self, text: str) -> str:
         summaries = []
-        for seg_type in re.findall(r"\[CQ:([^,\]]+)", text or ""):
-            seg_type = seg_type.lower()
+        for match in re.finditer(r"\[CQ:([^,\]]+)(?:,([^\]]*))?\]", text or "", re.I):
+            seg_type = match.group(1).lower()
+            attrs = match.group(2) or ""
             if self._is_image_segment_type(seg_type):
+                continue
+            data = self._parse_cq_attrs(attrs) if attrs else {}
+            if self._is_chat_record_segment(seg_type, data) or self._looks_like_chat_record({"raw": attrs}):
+                summaries.append(CHAT_RECORD_TEXT)
                 continue
             if seg_type in {"mface", "market_face", "face", "emoji"}:
                 summaries.append("[表情]")
@@ -1509,14 +1601,95 @@ class MessageMixin:
 
         if self._record_message_key(left) != self._record_message_key(right):
             return False
-        if self._record_images_key(left) != self._record_images_key(right):
+        if not self._record_visual_keys_match(self._record_images_key(left), self._record_images_key(right)):
             return False
-        if self._record_media_key(left) != self._record_media_key(right):
+        if not self._record_visual_keys_match(self._record_media_key(left), self._record_media_key(right)):
             return False
         if self._record_quote_key(left) != self._record_quote_key(right):
             return False
 
         return abs(self._record_time(left) - self._record_time(right)) <= window_seconds
+
+    def _record_visual_keys_match(self, left: tuple[Any, ...], right: tuple[Any, ...]) -> bool:
+        if left == right:
+            return True
+        if not left or not right:
+            return True
+        left_set = set(left)
+        right_set = set(right)
+        return left_set.issubset(right_set) or right_set.issubset(left_set)
+
+    def _merge_duplicate_record(self, left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+        use_right = self._record_richness_key(right) >= self._record_richness_key(left)
+        base = dict(right if use_right else left)
+        other = left if use_right else right
+
+        for key in (
+            "message",
+            "name",
+            "role",
+            "title",
+            "member_title",
+            "level",
+            "message_id",
+            "target",
+            "quote",
+            "poke",
+            "message_after_images",
+        ):
+            if not base.get(key) and other.get(key):
+                base[key] = other[key]
+
+        base["images"] = self._unique_strings([*(base.get("images") or []), *(other.get("images") or [])])
+        if base.get("image") or other.get("image"):
+            base["image"] = base["images"]
+        cache = [*(base.get("image_cache") or []), *(other.get("image_cache") or [])]
+        if cache:
+            base["image_cache"] = self._unique_image_cache(cache)
+        base["media"] = self._unique_media([*(base.get("media") or []), *(other.get("media") or [])])
+        if base.get("at_targets") or other.get("at_targets"):
+            base["at_targets"] = self._unique_strings([*(base.get("at_targets") or []), *(other.get("at_targets") or [])])
+        for key in ("is_context", "at_after_image"):
+            base[key] = bool(base.get(key) or other.get(key))
+        for key in ("before", "after"):
+            merged = [*(base.get(key) or []), *(other.get(key) or [])]
+            if merged:
+                base[key] = merged
+        return base
+
+    def _record_richness_key(self, record: dict[str, Any]) -> tuple[int, int, int, int, int]:
+        image_count = len(record.get("images") or record.get("image") or [])
+        cache_count = len(record.get("image_cache") or [])
+        media_count = len(record.get("media") or [])
+        quote = record.get("quote")
+        quote_score = 1 if isinstance(quote, dict) and (quote.get("message") or quote.get("images")) else 0
+        return (
+            image_count + cache_count,
+            media_count,
+            quote_score,
+            len(str(record.get("message") or "")),
+            self._record_time(record),
+        )
+
+    def _unique_image_cache(self, items: list[Any]) -> list[dict[str, str]]:
+        result: list[dict[str, str]] = []
+        seen_sources: set[str] = set()
+        seen_locals: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "").strip()
+            local = str(item.get("local") or "").strip()
+            if source and source in seen_sources:
+                continue
+            if not source and local and local in seen_locals:
+                continue
+            if source:
+                seen_sources.add(source)
+            if local:
+                seen_locals.add(local)
+            result.append({k: str(v) for k, v in item.items() if v is not None})
+        return result
 
     def _record_message_key(self, record: dict[str, Any]) -> str:
         poke = record.get("poke")

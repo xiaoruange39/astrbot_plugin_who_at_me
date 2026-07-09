@@ -28,6 +28,9 @@ except ImportError:
     from modules.rendering import RenderingMixin
 
 
+GROUP_NOTICE_EVENT_TYPE = getattr(filter.EventMessageType, "GROUP_NOTICE", filter.EventMessageType.GROUP_MESSAGE)
+
+
 class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageApiMixin, PageSettingsMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
@@ -99,11 +102,19 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
     async def mark_group_activity_early(self, event: AstrMessageEvent):
         await self._mark_group_activity(event)
 
+    @filter.event_message_type(GROUP_NOTICE_EVENT_TYPE, priority=10001)
+    async def on_group_notice(self, event: AstrMessageEvent):
+        group_id = self._group_id(event)
+        if group_id:
+            await self._handle_recall_event(event, group_id)
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=1000)
     async def on_group_message(self, event: AstrMessageEvent):
         """记录群聊 @，并兼容原插件的自然语言命令。"""
         group_id = self._group_id(event)
         if not group_id:
+            return
+        if await self._handle_recall_event(event, group_id):
             return
 
         text = self._normalize_command_text(self._message_text(event))
@@ -263,6 +274,13 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 REMINDER_CONTEXT_SET_PATTERN,
             )
         )
+
+    async def _handle_recall_event(self, event: AstrMessageEvent, group_id: str) -> bool:
+        message_id = self._recall_message_id(event)
+        if not message_id:
+            return False
+        await self._remove_recalled_message(group_id, message_id)
+        return True
 
     async def _record_mentions(
         self,
@@ -952,8 +970,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         for record in records:
             for idx, existing in enumerate(deduped):
                 if self._records_are_duplicate(existing, record):
-                    if self._record_time(record) >= self._record_time(existing):
-                        deduped[idx] = record
+                    deduped[idx] = self._merge_duplicate_record(existing, record)
                     break
             else:
                 deduped.append(record)
