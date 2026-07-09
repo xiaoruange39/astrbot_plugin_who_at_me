@@ -15,6 +15,7 @@ except ImportError:
 
 IMAGE_SEGMENT_TYPES = {
     "image",
+    "picture",
     "mface",
     "market_face",
     "marketface",
@@ -442,8 +443,7 @@ class MessageMixin:
         for segment in segments:
             if self._is_reference_segment(segment):
                 continue
-            seg_type = self._segment_type(segment)
-            if self._is_image_segment_type(seg_type):
+            if self._is_image_segment(segment):
                 saw_image = True
                 continue
             if self._is_target_at_segment(segment, mentions):
@@ -488,7 +488,7 @@ class MessageMixin:
             if self._is_target_at_segment(segment, mentions):
                 saw_target_at = True
                 continue
-            if self._is_image_segment_type(seg_type):
+            if self._is_image_segment(segment):
                 if saw_target_at:
                     saw_image_after_at = True
                 continue
@@ -527,7 +527,7 @@ class MessageMixin:
 
     def _layout_segments(self, event: AstrMessageEvent) -> list[Any]:
         chain = self._message_chain(event)
-        if any(self._is_image_segment_type(self._segment_type(segment)) for segment in chain):
+        if any(self._is_image_segment(segment) for segment in chain):
             return chain
         return self._raw_message_segments(event) or chain
 
@@ -875,6 +875,17 @@ class MessageMixin:
     def _is_image_segment_type(self, seg_type: str) -> bool:
         return self._normalize_segment_type(seg_type) in IMAGE_SEGMENT_TYPES
 
+    def _is_image_segment(self, segment: Any) -> bool:
+        if self._is_image_segment_type(self._segment_type(segment)):
+            return True
+        if self._is_image_component_name(segment):
+            return True
+        return bool(self._segment_image_values(segment))
+
+    def _is_image_component_name(self, segment: Any) -> bool:
+        cls_name = self._normalize_segment_type(segment.__class__.__name__)
+        return cls_name in IMAGE_SEGMENT_TYPES or any(token in cls_name for token in ("image", "picture", "photo"))
+
     def _segments_from_value(self, value: Any) -> list[Any]:
         if isinstance(value, list):
             return value
@@ -920,12 +931,15 @@ class MessageMixin:
             if self._is_reference_segment(segment):
                 continue
             seg_type = self._segment_type(segment)
-            if not self._is_image_segment_type(seg_type):
+            if not self._is_image_segment(segment):
                 continue
             names = IMAGE_SOURCE_KEYS
             if seg_type in {"video", "shortvideo"}:
                 names = VIDEO_COVER_KEYS
-            values = self._segment_values(segment, names)
+            if self._is_image_segment_type(seg_type) or self._is_image_component_name(segment):
+                values = self._segment_values(segment, names)
+            else:
+                values = self._segment_image_values(segment, names)
             if values:
                 urls.extend(str(value) for value in values)
                 continue
@@ -939,6 +953,23 @@ class MessageMixin:
                 data = self._segment_data(segment)
                 logger.debug(f"[谁艾特我] 图片段未找到可渲染来源: type={seg_type}, keys={list(data.keys()) if data else []}")
         return self._unique_strings(urls)
+
+    def _segment_image_values(self, segment: Any, names: list[str] | None = None) -> list[Any]:
+        values = self._segment_values(segment, names or IMAGE_SOURCE_KEYS)
+        return [value for value in values if self._looks_like_image_source(value)]
+
+    def _looks_like_image_source(self, value: Any) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return False
+        if text.startswith(("base64://", "data:image/")):
+            return True
+        if re.match(r"^https?://", text, re.I):
+            return True
+        suffix = Path(text.split("?", 1)[0]).suffix.lower()
+        if suffix in IMAGE_MIME_TYPES:
+            return True
+        return bool(re.search(r"(^|[/\\])media_image_[^/\\]+$", text, re.I))
 
     def _segments_media(self, segments: list[Any]) -> list[dict[str, str]]:
         media = []
@@ -1092,7 +1123,7 @@ class MessageMixin:
     def _segment_media_summary(self, segment: Any) -> str:
         seg_type = self._segment_type(segment)
         data = self._segment_data(segment)
-        if self._is_image_segment_type(seg_type):
+        if self._is_image_segment(segment):
             return ""
         if self._is_chat_record_segment(seg_type, data):
             return CHAT_RECORD_TEXT
