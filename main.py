@@ -669,6 +669,12 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         if render_is_at:
             message = self._strip_at_display(message, at_candidates)
         at_after_image = bool(data.get("at_after_image") and images)
+        message_after_images = str(data.get("message_after_images") or "").strip()
+        if message_after_images and images and not at_after_image:
+            if message.strip() == message_after_images:
+                message = ""
+            elif message.strip().endswith(message_after_images):
+                message = message.strip()[: -len(message_after_images)].strip()
         role = str(data.get("role") or "member").lower()
         role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "群员")
         title = str(data.get("title") or "")
@@ -700,6 +706,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             "message": message,
             "has_message": bool(message.strip()),
             "message_html": html.escape(message).replace("\n", "<br>"),
+            "has_message_after_images": bool(message_after_images),
+            "message_after_images_html": html.escape(message_after_images).replace("\n", "<br>"),
             "images": images,
             "media": media,
             "quote": self._view_quote(data.get("quote")),
@@ -832,6 +840,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         base["images"] = self._unique_strings([*(base.get("images") or []), *(other.get("images") or [])])
         base["media"] = self._unique_media([*(base.get("media") or []), *(other.get("media") or [])])
         base["at_after_image"] = bool(base.get("at_after_image") or other.get("at_after_image"))
+        if not base.get("has_message_after_images") and other.get("has_message_after_images"):
+            base["has_message_after_images"] = True
+            base["message_after_images_html"] = other.get("message_after_images_html") or ""
 
         if not base.get("quote") and other.get("quote"):
             base["quote"] = other.get("quote")

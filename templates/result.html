@@ -462,6 +462,9 @@
                         {% for image in msg.images %}
                           <img src="{{ image }}" class="msg-img" onerror="this.remove()" />
                         {% endfor %}
+                        {% if msg.has_message_after_images and not msg.at_after_image %}
+                          <div class="msg-text after-images">{{ msg.message_after_images_html | safe }}</div>
+                        {% endif %}
                         {% if (msg.is_at or msg.has_message) and msg.at_after_image %}
                           <div class="msg-text after-images">
                             {% if msg.is_at %}<span class="at-text">@{{ target_name }}</span>{% endif %}

@@ -182,10 +182,33 @@ class DataMixin:
 
     def _prune_record_image_caches(self, records: list[dict[str, Any]]) -> None:
         keep_count = self._recent_image_cache_records()
-        keep_from = max(0, len(records) - keep_count) if keep_count > 0 else len(records)
-        for index, record in enumerate(records):
-            if index < keep_from:
+        if keep_count <= 0:
+            for record in records:
                 self._drop_record_image_cache(record, delete_files=True)
+            return
+
+        image_records_seen = 0
+        for record in reversed(records):
+            if not self._record_has_image_content(record):
+                continue
+            image_records_seen += 1
+            if image_records_seen > keep_count:
+                self._drop_record_image_cache(record, delete_files=True)
+
+    def _record_has_image_content(self, record: dict[str, Any]) -> bool:
+        if record.get("images") or record.get("image") or record.get("image_cache"):
+            return True
+
+        quote = record.get("quote")
+        if isinstance(quote, dict) and (quote.get("images") or quote.get("image") or quote.get("image_cache")):
+            return True
+
+        media = record.get("media")
+        if isinstance(media, list):
+            for item in media:
+                if isinstance(item, dict) and (item.get("cover") or item.get("cover_cache")):
+                    return True
+        return False
 
     def _drop_record_image_cache(self, record: dict[str, Any], delete_files: bool) -> None:
         cache = record.pop("image_cache", None)

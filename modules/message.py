@@ -50,6 +50,10 @@ class MessageMixin:
         if mentions:
             record["at_targets"] = [str(item) for item in mentions]
             record["at_after_image"] = self._mention_after_image(event, mentions)
+            if not record["at_after_image"]:
+                message_after_images = self._message_after_images(event, mentions)
+                if message_after_images:
+                    record["message_after_images"] = message_after_images
         if poke:
             record["poke"] = poke
         if quote:
@@ -84,6 +88,8 @@ class MessageMixin:
             context["at_targets"] = record["at_targets"]
         if record.get("at_after_image"):
             context["at_after_image"] = record["at_after_image"]
+        if record.get("message_after_images"):
+            context["message_after_images"] = record["message_after_images"]
         if record.get("poke"):
             context["poke"] = record["poke"]
         if record.get("quote"):
@@ -347,6 +353,67 @@ class MessageMixin:
                 if self._mention_matches(value, mentions):
                     return saw_image
         return False
+
+    def _message_after_images(self, event: AstrMessageEvent, mentions: list[str]) -> str:
+        segments = self._raw_message_segments(event) or self._message_chain(event)
+        if segments:
+            text = self._segments_text_after_images(segments, mentions)
+            if text:
+                return text
+
+        for raw_text in self._raw_message_texts(event):
+            text = self._cq_text_after_images(raw_text, mentions)
+            if text:
+                return text
+        return ""
+
+    def _segments_text_after_images(self, segments: list[Any], mentions: list[str]) -> str:
+        saw_target_at = False
+        saw_image_after_at = False
+        texts: list[str] = []
+        for segment in segments:
+            if self._is_reference_segment(segment):
+                continue
+            seg_type = self._segment_type(segment)
+            if self._is_target_at_segment(segment, mentions):
+                saw_target_at = True
+                continue
+            if seg_type in {"image", "mface", "market_face", "marketface"}:
+                if saw_target_at:
+                    saw_image_after_at = True
+                continue
+            if not saw_image_after_at:
+                continue
+            if seg_type in {"text", "plain"}:
+                value = self._segment_value(segment, ["text", "content", "message"])
+                if value:
+                    texts.append(str(value))
+            else:
+                summary = self._segment_media_summary(segment)
+                if summary:
+                    texts.append(summary)
+        return self._strip_cq_display("".join(texts))
+
+    def _cq_text_after_images(self, text: str, mentions: list[str]) -> str:
+        saw_target_at = False
+        saw_image_after_at = False
+        parts: list[str] = []
+        cursor = 0
+        for match in re.finditer(r"\[CQ:(image|mface|market_face|marketface|at),([^\]]+)\]", text or "", re.I):
+            if saw_image_after_at and match.start() > cursor:
+                parts.append(text[cursor : match.start()])
+            seg_type = match.group(1).lower()
+            data = self._parse_cq_attrs(match.group(2))
+            if seg_type == "at":
+                value = data.get("qq") or data.get("user_id") or data.get("target") or data.get("id")
+                if self._mention_matches(value, mentions):
+                    saw_target_at = True
+            elif saw_target_at:
+                saw_image_after_at = True
+            cursor = match.end()
+        if saw_image_after_at and cursor < len(text or ""):
+            parts.append((text or "")[cursor:])
+        return self._strip_cq_display("".join(parts))
 
     def _is_target_at_segment(self, segment: Any, mentions: list[str]) -> bool:
         if self._segment_type(segment) != "at" and segment.__class__.__name__.lower() != "at" and not hasattr(segment, "qq"):
