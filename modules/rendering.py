@@ -29,7 +29,6 @@ class RenderingMixin:
         data = dict(data)
         data.setdefault("layout", self._render_layout())
         data.setdefault("custom_font_css", self._custom_font_css())
-        data["extract_video_frame"] = False
         timeout = self._render_task_timeout_sec()
         if self._config_bool("render", "prefer_browser", default=True):
             try:

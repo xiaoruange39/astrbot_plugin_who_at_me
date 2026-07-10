@@ -102,7 +102,18 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=10000)
     async def mark_group_activity_early(self, event: AstrMessageEvent):
-        await self._mark_group_activity(event)
+        try:
+            setattr(event, "_who_at_me_activity_handled", True)
+        except Exception:
+            pass
+        try:
+            await self._mark_group_activity(event)
+        except Exception as exc:
+            try:
+                setattr(event, "_who_at_me_activity_handled", False)
+            except Exception:
+                pass
+            logger.error(f"[who_at_me] early activity update failed: {exc}")
 
     @filter.event_message_type(GROUP_NOTICE_EVENT_TYPE, priority=10001)
     async def on_group_notice(self, event: AstrMessageEvent):
@@ -121,6 +132,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
         text = self._normalize_command_text(self._message_text(event))
         is_plugin_command = self._is_plugin_command(text)
+        activity_handled = bool(getattr(event, "_who_at_me_activity_handled", False))
         if not self._global_group_allowed(event):
             if is_plugin_command:
                 self._stop_event(event)
@@ -130,7 +142,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         sender_id = self._sender_id(event)
         self_id = self._self_id(event)
         if sender_id and self_id and sender_id == self_id:
-            await self._delete_pending_reminders(group_id, self_id)
+            if not activity_handled:
+                await self._delete_pending_reminders(group_id, self_id)
             return
         if sender_id:
             await self._remember_sender_member(event, group_id, sender_id)
@@ -140,18 +153,20 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             self._stop_event(event)
             self._disable_llm(event)
             if sender_id:
-                await self._delete_pending_reminders(group_id, sender_id)
+                if not activity_handled:
+                    await self._delete_pending_reminders(group_id, sender_id)
                 await self._record_context_message(event, group_id, mentions, append_to_cache=True)
-                await self._update_last_active(group_id, sender_id, self._timestamp(event))
+                if not activity_handled:
+                    await self._update_last_active(group_id, sender_id, self._timestamp(event))
             command_result = await self._handle_command(event, group_id, text, mentions)
             for result in command_result or []:
                 yield result
             return
 
-        if sender_id:
+        if sender_id and not activity_handled:
             await self._deliver_pending_reminders(event, group_id, sender_id)
         await self._record_mentions(event, group_id, mentions)
-        if sender_id:
+        if sender_id and not activity_handled:
             await self._update_last_active(group_id, sender_id, self._timestamp(event))
 
     async def _mark_group_activity(self, event: AstrMessageEvent) -> None:
@@ -444,6 +459,10 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         del cache[:-max(self._query_context_max_messages(), self._max_reminder_context())]
 
     async def _append_after_context(self, group_id: str, current: dict[str, Any]) -> None:
+        async with self._kv_lock(f"runtime:after-context:{group_id}"):
+            await self._append_after_context_locked(group_id, current)
+
+    async def _append_after_context_locked(self, group_id: str, current: dict[str, Any]) -> None:
         tasks = self.after_tasks.get(group_id, [])
         for idx in range(len(tasks) - 1, -1, -1):
             task = tasks[idx]
@@ -466,6 +485,10 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 tasks.pop(idx)
 
     async def _append_reminder_after_context(self, group_id: str, current: dict[str, Any]) -> None:
+        async with self._kv_lock(f"runtime:after-context:{group_id}"):
+            await self._append_reminder_after_context_locked(group_id, current)
+
+    async def _append_reminder_after_context_locked(self, group_id: str, current: dict[str, Any]) -> None:
         tasks = self.reminder_after_tasks.get(group_id, [])
         for idx in range(len(tasks) - 1, -1, -1):
             task = tasks[idx]

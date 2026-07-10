@@ -34,6 +34,39 @@ class DataMixin:
             locks[key] = lock
         return lock
 
+    def _preferences_write_lock(self) -> asyncio.Lock:
+        lock = getattr(self, "_preferences_write_lock_instance", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            setattr(self, "_preferences_write_lock_instance", lock)
+        return lock
+
+    async def put_kv_data(self, key: str, value: Any) -> Any:
+        return await self._run_kv_write(super().put_kv_data, key, value)
+
+    async def delete_kv_data(self, key: str) -> Any:
+        return await self._run_kv_write(super().delete_kv_data, key)
+
+    async def _run_kv_write(self, operation: Any, key: str, *args: Any) -> Any:
+        delays = (0.05, 0.1, 0.2, 0.4, 0.8)
+        async with self._preferences_write_lock():
+            for attempt in range(len(delays) + 1):
+                try:
+                    return await operation(key, *args)
+                except Exception as exc:
+                    if not self._is_database_locked_error(exc) or attempt >= len(delays):
+                        raise
+                    delay = delays[attempt]
+                    logger.warning(
+                        "[who_at_me] preferences database locked; "
+                        f"retrying write for {key} in {delay:.2f}s ({attempt + 1}/{len(delays)})"
+                    )
+                    await asyncio.sleep(delay)
+        raise RuntimeError("unreachable")
+
+    def _is_database_locked_error(self, exc: Exception) -> bool:
+        return "database is locked" in str(exc).lower()
+
     async def _append_record(self, group_id: str, target: str, record: dict[str, Any]) -> None:
         key = self._record_key(group_id, target)
         cached_record = await self._cache_record_images(dict(record))
