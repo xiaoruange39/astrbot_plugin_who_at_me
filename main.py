@@ -11,23 +11,58 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 
-try:
+if __package__:
     from .modules.config import ConfigMixin
-    from .modules.constants import *
+    from .modules.constants import (
+        ALL_TARGET,
+        CLEAR_ALL_PATTERN,
+        CLEAR_PATTERN,
+        CONTEXT_INDEX_KEY,
+        CONTEXT_OFF_PATTERN,
+        CONTEXT_ON_PATTERN,
+        INDEX_KEY,
+        QUERY_PATTERN,
+        REMINDER_CONTEXT_OFF_PATTERN,
+        REMINDER_CONTEXT_ON_PATTERN,
+        REMINDER_CONTEXT_SET_PATTERN,
+        REMINDER_GROUP_OFF_PATTERN,
+        REMINDER_GROUP_ON_PATTERN,
+        REMINDER_PENDING_INDEX_KEY,
+        REMINDER_PERSONAL_OFF_PATTERN,
+        REMINDER_PERSONAL_ON_PATTERN,
+        REMINDER_STATUS_PATTERN,
+    )
     from .modules.data import DataMixin
     from .modules.message import MessageMixin
     from .modules.page_api import PageApiMixin
     from .modules.page_settings import PageSettingsMixin
     from .modules.rendering import RenderingMixin
-except ImportError:
+else:
     from modules.config import ConfigMixin
-    from modules.constants import *
+    from modules.constants import (
+        ALL_TARGET,
+        CLEAR_ALL_PATTERN,
+        CLEAR_PATTERN,
+        CONTEXT_INDEX_KEY,
+        CONTEXT_OFF_PATTERN,
+        CONTEXT_ON_PATTERN,
+        INDEX_KEY,
+        QUERY_PATTERN,
+        REMINDER_CONTEXT_OFF_PATTERN,
+        REMINDER_CONTEXT_ON_PATTERN,
+        REMINDER_CONTEXT_SET_PATTERN,
+        REMINDER_GROUP_OFF_PATTERN,
+        REMINDER_GROUP_ON_PATTERN,
+        REMINDER_PENDING_INDEX_KEY,
+        REMINDER_PERSONAL_OFF_PATTERN,
+        REMINDER_PERSONAL_ON_PATTERN,
+        REMINDER_STATUS_PATTERN,
+    )
     from modules.data import DataMixin
     from modules.message import MessageMixin
     from modules.page_api import PageApiMixin
     from modules.page_settings import PageSettingsMixin
     from modules.rendering import RenderingMixin
-
 
 GROUP_NOTICE_EVENT_TYPE = getattr(filter.EventMessageType, "GROUP_NOTICE", filter.EventMessageType.GROUP_MESSAGE)
 
@@ -52,53 +87,32 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
     def _register_page_apis(self, context: Context) -> None:
         try:
             from quart import jsonify
-
-            self._jsonify = jsonify
-            for prefix in ("astrbot_plugin_who_at_me_pro", "astrbot_plugin_who_at_me"):
-                context.register_web_api(
-                    f"/{prefix}/layout",
-                    self.page_layout,
-                    ["GET", "POST"],
-                    "谁艾特我Pro渲染布局设置",
-                )
-                context.register_web_api(
-                    f"/{prefix}/fonts",
-                    self.page_fonts,
-                    ["GET"],
-                    "谁艾特我Pro字体列表",
-                )
-                context.register_web_api(
-                    f"/{prefix}/fonts/upload",
-                    self.page_font_upload,
-                    ["POST"],
-                    "谁艾特我Pro上传字体",
-                )
-                context.register_web_api(
-                    f"/{prefix}/fonts/select",
-                    self.page_font_select,
-                    ["POST"],
-                    "谁艾特我Pro选择字体",
-                )
-                context.register_web_api(
-                    f"/{prefix}/fonts/delete",
-                    self.page_font_delete,
-                    ["POST"],
-                    "谁艾特我Pro删除字体",
-                )
-                context.register_web_api(
-                    f"/{prefix}/images/upload",
-                    self.page_image_upload,
-                    ["POST"],
-                    "谁艾特我Pro上传渲染图片",
-                )
-                context.register_web_api(
-                    f"/{prefix}/images/reset",
-                    self.page_image_reset,
-                    ["POST"],
-                    "谁艾特我Pro恢复默认渲染图片",
-                )
         except Exception as exc:
-            logger.warning(f"[谁艾特我] 注册 Page API 失败: {exc}")
+            logger.warning(f"[who_at_me] Page API unavailable: {exc}")
+            return
+
+        self._jsonify = jsonify
+        endpoints = (
+            ("layout", self.page_layout, ["GET", "POST"], "render layout settings"),
+            ("fonts", self.page_fonts, ["GET"], "font list"),
+            ("fonts/upload", self.page_font_upload, ["POST"], "font upload"),
+            ("fonts/select", self.page_font_select, ["POST"], "font selection"),
+            ("fonts/delete", self.page_font_delete, ["POST"], "font deletion"),
+            ("images/upload", self.page_image_upload, ["POST"], "render image upload"),
+            ("images/reset", self.page_image_reset, ["POST"], "render image reset"),
+        )
+        for prefix in ("astrbot_plugin_who_at_me_pro", "astrbot_plugin_who_at_me"):
+            for suffix, handler, methods, description in endpoints:
+                route = f"/{prefix}/{suffix}"
+                try:
+                    context.register_web_api(
+                        route,
+                        handler,
+                        methods,
+                        f"who_at_me Pro {description}",
+                    )
+                except Exception as exc:
+                    logger.warning(f"[who_at_me] Page API registration failed for {route}: {exc}")
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=10000)
     async def mark_group_activity_early(self, event: AstrMessageEvent):
@@ -296,7 +310,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         await self._delete_pending_key(self._reminder_pending_key(group_id, user_id))
 
     async def _delete_record_key(self, key: str) -> bool:
-        async with self._data_maintenance_lock():
+        async with self._data_operation():
             return await self._delete_record_key_locked(key)
 
     async def _delete_record_key_locked(self, key: str) -> bool:
@@ -309,7 +323,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         return has_records
 
     async def _delete_pending_key(self, key: str) -> bool:
-        async with self._data_maintenance_lock():
+        async with self._data_operation():
             return await self._delete_pending_key_locked(key)
 
     async def _delete_pending_key_locked(self, key: str) -> bool:
@@ -326,7 +340,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             return
         key = self._reminder_pending_key(group_id, user_id)
         dropped_records: list[dict[str, Any]] = []
-        async with self._data_maintenance_lock():
+        async with self._data_operation():
             async with self._kv_lock(key):
                 current = await self._get_pending_reminders(group_id, user_id)
                 merged = self._dedupe_records([*current, *records])
@@ -352,7 +366,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         now_time: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         key = self._reminder_pending_key(group_id, user_id)
-        async with self._data_maintenance_lock():
+        async with self._data_operation():
             async with self._kv_lock(key):
                 pending = await self._get_pending_reminders(group_id, user_id)
                 if not pending:
@@ -378,6 +392,15 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         return True
 
     async def _record_mentions(
+        self,
+        event: AstrMessageEvent,
+        group_id: str,
+        mentions: list[str],
+    ) -> None:
+        async with self._data_operation():
+            await self._record_mentions_locked(event, group_id, mentions)
+
+    async def _record_mentions_locked(
         self,
         event: AstrMessageEvent,
         group_id: str,
@@ -445,6 +468,22 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         *,
         append_to_cache: bool,
     ) -> dict[str, Any]:
+        async with self._data_operation():
+            return await self._record_context_message_locked(
+                event,
+                group_id,
+                mentions,
+                append_to_cache=append_to_cache,
+            )
+
+    async def _record_context_message_locked(
+        self,
+        event: AstrMessageEvent,
+        group_id: str,
+        mentions: list[str],
+        *,
+        append_to_cache: bool,
+    ) -> dict[str, Any]:
         context_on = await self._context_enabled(group_id)
         reminder_context = await self._reminder_context_config(group_id)
         reminder_context_on = bool(reminder_context.get("enabled"))
@@ -481,7 +520,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         del cache[:-max(self._query_context_max_messages(), self._max_reminder_context())]
 
     async def _append_after_context(self, group_id: str, current: dict[str, Any]) -> None:
-        async with self._data_maintenance_lock():
+        async with self._data_operation():
             async with self._kv_lock(f"runtime:after-context:{group_id}"):
                 await self._append_after_context_locked(group_id, current)
 
@@ -508,7 +547,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 tasks.pop(idx)
 
     async def _append_reminder_after_context(self, group_id: str, current: dict[str, Any]) -> None:
-        async with self._data_maintenance_lock():
+        async with self._data_operation():
             async with self._kv_lock(f"runtime:after-context:{group_id}"):
                 await self._append_reminder_after_context_locked(group_id, current)
 
@@ -561,7 +600,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         key = self._reminder_pending_key(group_id, target)
         dropped_records: list[dict[str, Any]] = []
         duplicate = False
-        async with self._data_maintenance_lock():
+        async with self._data_operation():
             async with self._kv_lock(key):
                 pending = await self._get_pending_reminders(group_id, target)
                 if any(self._records_are_duplicate(item, pending_record) for item in pending):
@@ -734,7 +773,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         return event.plain_result("已成功清除")
 
     async def _clear_all(self, event: AstrMessageEvent) -> Any:
-        async with self._data_maintenance_lock():
+        async with self._data_maintenance():
             return await self._clear_all_locked(event)
 
     async def _clear_all_locked(self, event: AstrMessageEvent) -> Any:
@@ -745,7 +784,10 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         for key in keys:
             if not isinstance(key, str):
                 continue
-            await self._delete_record_key_locked(key)
+            async with self._kv_lock(key):
+                records = await self.get_kv_data(key, [])
+                await self.delete_kv_data(key)
+            self._drop_records_image_cache(records, delete_files=True)
             if key.startswith("records:"):
                 body = key[len("records:") :]
                 if ":" in body:
@@ -762,7 +804,10 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         await self.delete_kv_data(CONTEXT_INDEX_KEY)
 
         for key in pending_keys:
-            await self._delete_pending_key_locked(key)
+            async with self._kv_lock(key):
+                pending = await self.get_kv_data(key, [])
+                await self.delete_kv_data(key)
+            self._drop_records_image_cache(pending, delete_files=True)
         await self.delete_kv_data(REMINDER_PENDING_INDEX_KEY)
 
         self.before_cache.clear()
@@ -1179,30 +1224,38 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         if max_pages <= 0:
             return sorted(records, key=self._record_sort_key, reverse=reverse)
 
-        capacity = max_pages * max(1, self._max_messages_per_image())
         selected: list[dict[str, Any]] = []
-        used_messages = 0
+        selected_blocks: list[dict[str, Any]] = []
         latest_first = sorted(records, key=self._record_sort_key, reverse=True)
         for record in latest_first:
-            message_count = self._query_record_message_count(record, target_name, target_id)
-            if used_messages + message_count > capacity:
-                remaining = capacity - used_messages
-                if remaining > 0:
-                    selected.append(self._trim_record_context(record, remaining))
-                break
-            selected.append(record)
-            used_messages += message_count
+            record_blocks = self._build_blocks([record], target_name, target_id, reverse=reverse)
+            trial_blocks = (
+                [*selected_blocks, *record_blocks]
+                if reverse
+                else [*record_blocks, *selected_blocks]
+            )
+            if len(self._chunk_blocks(trial_blocks)) <= max_pages:
+                selected.append(record)
+                selected_blocks = trial_blocks
+                continue
+
+            max_messages = max_pages * max(1, self._max_messages_per_image())
+            record_size = sum(len(block.get("msgs") or []) for block in record_blocks)
+            for message_limit in range(min(record_size, max_messages), 0, -1):
+                trimmed = self._trim_record_context(record, message_limit)
+                trimmed_blocks = self._build_blocks([trimmed], target_name, target_id, reverse=reverse)
+                trial_blocks = (
+                    [*selected_blocks, *trimmed_blocks]
+                    if reverse
+                    else [*trimmed_blocks, *selected_blocks]
+                )
+                if len(self._chunk_blocks(trial_blocks)) <= max_pages:
+                    selected.append(trimmed)
+                    selected_blocks = trial_blocks
+                    break
+            break
 
         return sorted(selected, key=self._record_sort_key, reverse=reverse)
-
-    def _query_record_message_count(
-        self,
-        record: dict[str, Any],
-        target_name: str,
-        target_id: str,
-    ) -> int:
-        blocks = self._build_blocks([record], target_name, target_id, reverse=True)
-        return sum(len(block.get("msgs") or []) for block in blocks)
 
     def _trim_record_context(self, record: dict[str, Any], max_messages: int) -> dict[str, Any]:
         trimmed = dict(record)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+from contextlib import asynccontextmanager
 import hashlib
 import ipaddress
 import re
@@ -24,13 +25,86 @@ except ImportError:
 
 
 class DataMixin:
-    def _data_maintenance_lock(self) -> asyncio.Lock:
-        lock = getattr(self, "_data_maintenance_lock_instance", None)
-        if lock is None:
-            lock = asyncio.Lock()
-            setattr(self, "_data_maintenance_lock_instance", lock)
-        return lock
+    def _data_gate(self) -> asyncio.Condition:
+        condition = getattr(self, "_data_gate_condition", None)
+        if condition is None:
+            condition = asyncio.Condition()
+            self._data_gate_condition = condition
+            self._data_gate_readers = 0
+            self._data_gate_writer = False
+            self._data_gate_waiting_writers = 0
+            self._data_operation_depths = {}
+            self._data_maintenance_owner = None
+            self._data_maintenance_depth = 0
+        return condition
 
+    @asynccontextmanager
+    async def _data_operation(self):
+        condition = self._data_gate()
+        task = asyncio.current_task()
+        if self._data_maintenance_owner is task:
+            yield
+            return
+
+        depth = self._data_operation_depths.get(task, 0)
+        if depth:
+            self._data_operation_depths[task] = depth + 1
+            try:
+                yield
+            finally:
+                self._data_operation_depths[task] -= 1
+            return
+
+        acquired = False
+        try:
+            async with condition:
+                while self._data_gate_writer or self._data_gate_waiting_writers:
+                    await condition.wait()
+                self._data_gate_readers += 1
+                self._data_operation_depths[task] = 1
+                acquired = True
+            yield
+        finally:
+            if acquired:
+                self._data_operation_depths.pop(task, None)
+                async with condition:
+                    self._data_gate_readers -= 1
+                    if self._data_gate_readers == 0:
+                        condition.notify_all()
+
+    @asynccontextmanager
+    async def _data_maintenance(self):
+        condition = self._data_gate()
+        task = asyncio.current_task()
+        if self._data_maintenance_owner is task:
+            self._data_maintenance_depth += 1
+            try:
+                yield
+            finally:
+                self._data_maintenance_depth -= 1
+            return
+
+        acquired = False
+        try:
+            async with condition:
+                self._data_gate_waiting_writers += 1
+                try:
+                    while self._data_gate_writer or self._data_gate_readers:
+                        await condition.wait()
+                    self._data_gate_writer = True
+                    self._data_maintenance_owner = task
+                    self._data_maintenance_depth = 1
+                    acquired = True
+                finally:
+                    self._data_gate_waiting_writers -= 1
+            yield
+        finally:
+            if acquired:
+                async with condition:
+                    self._data_maintenance_depth = 0
+                    self._data_maintenance_owner = None
+                    self._data_gate_writer = False
+                    condition.notify_all()
     def _kv_lock(self, key: str) -> asyncio.Lock:
         locks = getattr(self, "_kv_locks", None)
         if not isinstance(locks, dict):
@@ -77,7 +151,7 @@ class DataMixin:
 
     async def _append_record(self, group_id: str, target: str, record: dict[str, Any]) -> None:
         cached_record = await self._cache_record_images(dict(record))
-        async with self._data_maintenance_lock():
+        async with self._data_operation():
             await self._append_record_locked(group_id, target, cached_record)
 
     async def _append_record_locked(
@@ -535,7 +609,7 @@ class DataMixin:
         return pending if isinstance(pending, list) else []
 
     async def _remove_recalled_message(self, group_id: str, message_id: str) -> int:
-        async with self._data_maintenance_lock():
+        async with self._data_operation():
             return await self._remove_recalled_message_locked(group_id, message_id)
 
     async def _remove_recalled_message_locked(self, group_id: str, message_id: str) -> int:
@@ -919,16 +993,25 @@ class DataMixin:
         return bool(await self.get_kv_data(self._context_key(group_id), False))
 
     async def _set_context(self, group_id: str, enabled: bool) -> None:
-        key = self._context_key(group_id)
-        if enabled:
-            await self.put_kv_data(key, True)
+        async with self._data_operation():
+            key = self._context_key(group_id)
             async with self._kv_lock(CONTEXT_INDEX_KEY):
                 context_keys = await self.get_kv_data(CONTEXT_INDEX_KEY, [])
-                if key not in context_keys:
-                    context_keys.append(key)
-                    await self.put_kv_data(CONTEXT_INDEX_KEY, context_keys)
-        else:
-            await self.delete_kv_data(key)
+                if not isinstance(context_keys, list):
+                    context_keys = []
+                if enabled:
+                    await self.put_kv_data(key, True)
+                    if key not in context_keys:
+                        context_keys.append(key)
+                        await self.put_kv_data(CONTEXT_INDEX_KEY, context_keys)
+                else:
+                    await self.delete_kv_data(key)
+                    if key in context_keys:
+                        context_keys.remove(key)
+                        if context_keys:
+                            await self.put_kv_data(CONTEXT_INDEX_KEY, context_keys)
+                        else:
+                            await self.delete_kv_data(CONTEXT_INDEX_KEY)
 
     async def _remember_index_key(self, key: str) -> None:
         async with self._kv_lock(INDEX_KEY):
