@@ -1,6 +1,6 @@
 # astrbot_plugin_who_at_me_pro
 
-从 Yunzai 插件 `谁艾特我.js` 移植来的 AstrBot 插件，用来记录群聊中的 `@`，查询谁艾特过自己或指定成员。
+![Preview](https://imgchr.com/i/pms6CJ1)
 
 ## 功能
 
