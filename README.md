@@ -1,6 +1,6 @@
 # astrbot_plugin_who_at_me_pro
 
-![Preview](https://imgchr.com/i/pms6CJ1)
+[![pms6CJ1.md.png](https://s41.ax1x.com/2026/07/11/pms6CJ1.md.png)](https://imgchr.com/i/pms6CJ1)
 
 ## 功能
 
