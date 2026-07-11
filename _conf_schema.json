@@ -92,7 +92,13 @@
         "description": "离开判定分钟数",
         "type": "int",
         "default": 10,
-        "hint": "超过这个时间未在群里发言，被艾特才会进入待提醒队列。"
+        "hint": "用户回来发言时，艾特消息超过这个时间才可能触发提醒。"
+      },
+      "min_messages_after_mention": {
+        "description": "触发提醒所需的最少群消息数",
+        "type": "int",
+        "default": 5,
+        "hint": "统计艾特消息之后、用户回来消息之前的群消息；与离开分钟数同时满足才提醒，0 表示不限制消息数。"
       },
       "max_pending_reminders": {
         "description": "每人每群最多保留的待提醒记录数",

@@ -94,6 +94,9 @@ class ConfigMixin:
     def _reminder_away_seconds(self) -> int:
         return max(0, self._config_int("reminder", "away_minutes", default=10)) * 60
 
+    def _reminder_min_messages(self) -> int:
+        return max(0, self._config_int("reminder", "min_messages_after_mention", default=5))
+
     def _max_pending_reminders(self) -> int:
         return max(1, self._config_int("reminder", "max_pending_reminders", default=MAX_PENDING_REMINDERS))
 
@@ -151,9 +154,6 @@ class ConfigMixin:
 
     def _reminder_user_key(self, group_id: str, user_id: str) -> str:
         return f"reminder:user_enabled:{group_id}:{user_id}"
-
-    def _reminder_last_active_key(self, group_id: str, user_id: str) -> str:
-        return f"reminder:last_active:{group_id}:{user_id}"
 
     def _reminder_pending_key(self, group_id: str, user_id: str) -> str:
         return f"reminder:pending:{group_id}:{user_id}"

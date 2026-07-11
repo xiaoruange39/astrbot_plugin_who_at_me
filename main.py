@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import re
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -80,6 +81,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self._font_css_cache_key: tuple[str, int, int] | None = None
         self._font_css_cache_value = ""
         self._receive_order = 0
+        self._group_message_counts: dict[str, int] = {}
+        self._message_count_epoch = uuid.uuid4().hex
         self._kv_locks: dict[str, asyncio.Lock] = {}
 
     def _register_page_apis(self, context: Context) -> None:
@@ -112,8 +115,38 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 except Exception as exc:
                     logger.warning(f"[who_at_me] Page API registration failed for {route}: {exc}")
 
+    def _event_group_message_count(self, event: AstrMessageEvent, group_id: str) -> int:
+        holder = getattr(event, "message_obj", event)
+        cached = self._numeric_order(getattr(holder, "_who_at_me_group_message_count", None))
+        if cached is not None:
+            return cached
+        count = self._group_message_counts.get(group_id, 0) + 1
+        self._group_message_counts[group_id] = count
+        try:
+            setattr(holder, "_who_at_me_group_message_count", count)
+        except Exception:
+            pass
+        return count
+
+    def _event_message_sequence(self, event: AstrMessageEvent) -> int | None:
+        raw = getattr(event.message_obj, "raw_message", None)
+        keys = ("message_seq", "messageSeq", "msg_seq", "msgSeq", "seq")
+        for key in keys:
+            sequence = self._numeric_order(getattr(event.message_obj, key, None))
+            if sequence is not None:
+                return sequence
+        if isinstance(raw, dict):
+            for key in keys:
+                sequence = self._numeric_order(raw.get(key))
+                if sequence is not None:
+                    return sequence
+        return None
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=10000)
     async def mark_group_activity_early(self, event: AstrMessageEvent):
+        group_id = self._group_id(event)
+        if group_id:
+            self._event_group_message_count(event, group_id)
         try:
             setattr(event, "_who_at_me_activity_handled", True)
         except Exception:
@@ -168,8 +201,6 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 if not activity_handled:
                     await self._delete_pending_reminders(group_id, sender_id)
                 await self._record_context_message(event, group_id, mentions, append_to_cache=True)
-                if not activity_handled:
-                    await self._update_last_active(group_id, sender_id, self._timestamp(event))
             command_result = await self._handle_command(event, group_id, text, mentions)
             for result in command_result or []:
                 yield result
@@ -178,8 +209,6 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         if sender_id and not activity_handled:
             await self._deliver_pending_reminders(event, group_id, sender_id)
         await self._record_mentions(event, group_id, mentions)
-        if sender_id and not activity_handled:
-            await self._update_last_active(group_id, sender_id, self._timestamp(event))
 
     async def _mark_group_activity(self, event: AstrMessageEvent) -> None:
         group_id = self._group_id(event)
@@ -198,11 +227,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         text = self._normalize_command_text(self._message_text(event))
         if self._is_plugin_command(text):
             await self._delete_pending_reminders(group_id, sender_id)
-            await self._update_last_active(group_id, sender_id, self._timestamp(event))
             return
 
         await self._deliver_pending_reminders(event, group_id, sender_id)
-        await self._update_last_active(group_id, sender_id, self._timestamp(event))
 
     async def _handle_command(
         self,
@@ -362,6 +389,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         group_id: str,
         user_id: str,
         now_time: int,
+        current_sequence: int | None,
+        current_message_count: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         key = self._reminder_pending_key(group_id, user_id)
         async with self._data_operation():
@@ -371,7 +400,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                     return [], []
                 pending = self._dedupe_records(pending)
                 away_seconds = self._reminder_away_seconds()
-                fallback_last_active = await self._reminder_last_active(group_id, user_id)
+                minimum_messages = self._reminder_min_messages()
                 ready = [
                     record
                     for record in pending
@@ -379,7 +408,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                         record,
                         now_time,
                         away_seconds,
-                        fallback_last_active,
+                        minimum_messages,
+                        current_sequence,
+                        current_message_count,
                     )
                 ]
                 await self.delete_kv_data(key)
@@ -388,32 +419,40 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             self._drop_records_image_cache(pending, delete_files=True)
         return ready, pending if ready else []
 
-    def _target_was_away(
-        self,
-        mention_time: int,
-        last_active: int,
-        away_seconds: int,
-    ) -> bool:
-        return away_seconds <= 0 or mention_time - last_active >= away_seconds
-
     def _pending_reminder_ready(
         self,
         record: dict[str, Any],
         now_time: int,
         away_seconds: int,
-        fallback_last_active: int,
+        minimum_messages: int,
+        current_sequence: int | None,
+        current_message_count: int,
     ) -> bool:
-        if away_seconds <= 0:
-            return True
         mention_time = self._record_time(record)
-        try:
-            last_active = int(record.get("target_last_active", fallback_last_active))
-        except (TypeError, ValueError):
-            last_active = fallback_last_active
-        return (
-            self._target_was_away(mention_time, last_active, away_seconds)
-            and now_time - mention_time >= away_seconds
-        )
+        if away_seconds > 0 and now_time - mention_time < away_seconds:
+            return False
+        return self._messages_since_mention(
+            record,
+            current_sequence,
+            current_message_count,
+        ) >= minimum_messages
+
+    def _messages_since_mention(
+        self,
+        record: dict[str, Any],
+        current_sequence: int | None,
+        current_message_count: int,
+    ) -> int:
+        mention_sequence = self._numeric_order(record.get("message_sequence"))
+        if current_sequence is not None and mention_sequence is not None:
+            return max(0, current_sequence - mention_sequence - 1)
+
+        if str(record.get("message_count_epoch") or "") != self._message_count_epoch:
+            return 0
+        mention_count = self._numeric_order(record.get("group_message_count"))
+        if mention_count is None:
+            return 0
+        return max(0, current_message_count - mention_count - 1)
 
     async def _handle_recall_event(self, event: AstrMessageEvent, group_id: str) -> bool:
         message_id = self._recall_message_id(event)
@@ -457,6 +496,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 else []
             )
             record = await self._mention_record(event, group_id, targets, sender_info, quote)
+            record["message_sequence"] = self._event_message_sequence(event)
+            record["group_message_count"] = self._event_group_message_count(event, group_id)
+            record["message_count_epoch"] = self._message_count_epoch
             if context_on:
                 record["is_context"] = True
                 record["before"] = before
@@ -620,15 +662,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         if not await self._reminder_user_enabled(group_id, target):
             return False
 
-        mention_time = self._record_time(record)
-        away_seconds = self._reminder_away_seconds()
-        target_last_active = await self._reminder_last_active(group_id, target)
-        if not self._target_was_away(mention_time, target_last_active, away_seconds):
-            return False
-
         pending_record = dict(record)
         pending_record["target"] = target
-        pending_record["target_last_active"] = target_last_active
         if context_config.get("enabled"):
             pending_record["is_context"] = True
             pending_record["before"] = list(before)
@@ -665,6 +700,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             group_id,
             user_id,
             self._timestamp(event),
+            self._event_message_sequence(event),
+            self._event_group_message_count(event, group_id),
         )
         if not pending:
             return

@@ -935,20 +935,6 @@ class DataMixin:
     async def _set_reminder_user_enabled(self, group_id: str, user_id: str, enabled: bool) -> None:
         await self.put_kv_data(self._reminder_user_key(group_id, user_id), bool(enabled))
 
-    async def _reminder_last_active(self, group_id: str, user_id: str) -> int:
-        value = await self.get_kv_data(
-            self._reminder_last_active_key(group_id, user_id),
-            0,
-        )
-        try:
-            last_active = int(value)
-        except (TypeError, ValueError):
-            last_active = 0
-        return max(0, last_active)
-
-    async def _update_last_active(self, group_id: str, user_id: str, timestamp: int) -> None:
-        await self.put_kv_data(self._reminder_last_active_key(group_id, user_id), int(timestamp))
-
     async def _reminder_context_config(self, group_id: str) -> dict[str, Any]:
         config = await self.get_kv_data(self._reminder_context_key(group_id), {})
         if not isinstance(config, dict):
@@ -996,7 +982,7 @@ class DataMixin:
             f"用户名单：{user_rule_status}\n"
             f"你的提醒：{user_status}\n"
             f"提醒上下文：{context_status}（前 {context_config.get('before', 0)} / 后 {context_config.get('after', 0)}）\n"
-            f"离开判定：{self._reminder_away_seconds() // 60} 分钟未发言\n"
+            f"提醒条件：艾特后 {self._reminder_away_seconds() // 60} 分钟，且期间至少 {self._reminder_min_messages()} 条群消息\n"
             f"待提醒记录：{pending_count} 条"
         )
 
