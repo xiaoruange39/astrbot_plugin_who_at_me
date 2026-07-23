@@ -858,7 +858,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         chunks = self._chunk_blocks(blocks)
         chunks = self._limit_chunks(chunks, self._max_reminder_pages(), keep_latest=True)
         image_paths: list[str] = []
-        sent = False
+        delivered = False
         group_name = await self._group_name(event, group_id)
         member_count = await self._member_count(event, group_id)
         context_enabled = any(item.get("is_context") for item in pending)
@@ -885,25 +885,36 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             )
 
             if reminder_text:
-                if not await self._try_send_text_images(event, reminder_text, image_paths):
+                if await self._try_send_text_images(event, reminder_text, image_paths):
+                    delivered = True
+                else:
                     if not await self._try_send(event, event.plain_result(reminder_text)):
                         raise RuntimeError("failed to send reminder text")
+                    delivered = True
                     for image_path in image_paths:
                         if not await self._try_send(event, event.image_result(image_path)):
-                            raise RuntimeError(f"发送提醒图片失败: {image_path}")
-            elif not await self._try_send_images(event, image_paths):
+                            logger.warning(f"[谁艾特我] 提醒图片回退发送失败: {image_path}")
+            elif await self._try_send_images(event, image_paths):
+                delivered = True
+            else:
                 for image_path in image_paths:
-                    if not await self._try_send(event, event.image_result(image_path)):
-                        raise RuntimeError(f"发送提醒图片失败: {image_path}")
-            sent = True
+                    if await self._try_send(event, event.image_result(image_path)):
+                        delivered = True
+                    else:
+                        logger.warning(f"[谁艾特我] 提醒图片发送失败: {image_path}")
+                if not delivered:
+                    raise RuntimeError("failed to send reminder images")
             self._drop_records_image_cache(original_pending, delete_files=True)
         except Exception as exc:
             logger.error(f"[谁艾特我] 渲染或发送提醒失败: {exc}")
-            if not sent:
+            if not delivered:
+                plain_summary = self._plain_summary(pending, target_name)
+                fallback_text = f"{reminder_text}\n\n{plain_summary}" if reminder_text else plain_summary
+                delivered = await self._try_send(event, event.plain_result(fallback_text))
+            if delivered:
+                self._drop_records_image_cache(original_pending, delete_files=True)
+            else:
                 await self._restore_pending_reminders(group_id, user_id, original_pending)
-            if reminder_text and not image_paths:
-                await self._try_send(event, event.plain_result(reminder_text))
-            await self._try_send(event, event.plain_result(self._plain_summary(pending, target_name)))
         finally:
             self._delete_cached_image_paths(temporary_image_paths)
 
