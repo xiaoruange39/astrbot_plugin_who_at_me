@@ -708,24 +708,42 @@ class DataMixin:
                 return 0
 
             cutoff_ts = time.time() - (hours * 3600)
-            cutoff_date_str = datetime.fromtimestamp(cutoff_ts).strftime("%Y%m%d")
-            
-            removed_count = 0
+            removed_files = 0
+            removed_dirs = 0
 
-            for item in cache_dir.iterdir():
-                if not item.is_dir() or not re.match(r"^\d{8}$", item.name):
+            all_paths = sorted(
+                cache_dir.rglob("*"),
+                key=lambda path: len(path.parts),
+                reverse=True,
+            )
+            for path in all_paths:
+                try:
+                    if not path.is_file() or path.stat().st_mtime >= cutoff_ts:
+                        continue
+                    path.unlink(missing_ok=True)
+                    removed_files += 1
+                except OSError:
                     continue
 
-                if item.name < cutoff_date_str:
-                    try:
-                        await asyncio.to_thread(self._delete_directory_recursive, item)
-                        removed_count += 1
-                    except Exception:
+            directories = sorted(
+                (path for path in all_paths if path.is_dir()),
+                key=lambda path: len(path.parts),
+                reverse=True,
+            )
+            for path in directories:
+                try:
+                    if any(path.iterdir()):
                         continue
+                    path.rmdir()
+                    removed_dirs += 1
+                except OSError:
+                    continue
 
-            if removed_count > 0:
-                logger.info(f"[谁艾特我] 已清理 {removed_count} 个 {hours} 小时前的过期图片缓存目录")
-            return removed_count
+            if removed_files or removed_dirs:
+                logger.info(
+                    f"[who_at_me] 清理了 {removed_files} 个过期图片文件和 {removed_dirs} 个空缓存目录（保留 {hours} 小时）"
+                )
+            return removed_files + removed_dirs
         except Exception as exc:
             logger.debug(f"[谁艾特我] 清理过期缓存失败: {exc}")
             return 0
